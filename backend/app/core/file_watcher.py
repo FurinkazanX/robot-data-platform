@@ -188,6 +188,43 @@ class MonitorService:
             self._loop.call_soon_threadsafe(self._pending_queue.put_nowait, path)
         self._emit_with_queue_threadsafe("detected", f"检测到新文件: {path.name}")
 
+    async def _wait_file_stable(
+        self, path: Path, item: ConversionItem,
+        poll_interval: float = 1.0, stable_required: int = 3, timeout: float = 300.0,
+    ) -> bool:
+        """Poll file size until unchanged for `stable_required` consecutive checks.
+
+        Returns True when stable, False on timeout or if monitoring stopped.
+        Sets item.message so the UI shows live wait feedback.
+        """
+        prev_size = -1
+        stable = 0
+        elapsed = 0.0
+
+        while elapsed < timeout and self._state == MonitorState.MONITORING:
+            try:
+                size = path.stat().st_size
+            except OSError:
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+                continue
+
+            if size > 0 and size == prev_size:
+                stable += 1
+                item.message = f"等待文件写入完成…（已稳定 {stable}/{stable_required}）"
+                if stable >= stable_required:
+                    return True
+            else:
+                stable = 0
+                item.message = f"等待文件写入完成…（大小 {size / 1024 / 1024:.1f} MB）"
+
+            prev_size = size
+            self._emit_with_queue("info", item.message)
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+
+        return False
+
     async def _convert_worker(self):
         from app.core.converter.base import get_converter
         from app.core.converter import hdf5_lerobot  # noqa: F401
@@ -210,6 +247,20 @@ class MonitorService:
             if not item:
                 continue
 
+            # ── Phase 1: wait for the file to finish being written / copied ──
+            item.status = "waiting"
+            item.percent = 0.0
+            item.message = f"等待文件写入完成…"
+            self._emit_with_queue("info", f"等待文件就绪: {file_path.name}")
+
+            stable = await self._wait_file_stable(file_path, item)
+            if not stable:
+                item.status = "failed"
+                item.message = "等待超时（5分钟），文件可能仍在传输中"
+                self._emit_with_queue("error", f"等待超时: {file_path.name}")
+                continue
+
+            # ── Phase 2: convert ──────────────────────────────────────────────
             item.status = "converting"
             item.percent = 0.0
             item.message = "准备中..."

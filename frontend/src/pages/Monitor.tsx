@@ -36,10 +36,11 @@ interface LogEntry {
 }
 
 const STATUS_TAG: Record<string, { color: string; label: string }> = {
-  pending:    { color: 'default',    label: '排队中' },
-  converting: { color: 'processing', label: '转换中' },
-  done:       { color: 'success',    label: '已完成' },
-  failed:     { color: 'error',      label: '失败'   },
+  waiting:    { color: 'gold',       label: '等待就绪' },
+  pending:    { color: 'default',    label: '排队中'   },
+  converting: { color: 'processing', label: '转换中'   },
+  done:       { color: 'success',    label: '已完成'   },
+  failed:     { color: 'error',      label: '失败'     },
 }
 
 const LOG_TAG_COLOR: Record<string, string> = {

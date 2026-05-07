@@ -127,7 +127,7 @@ export const editValue = (payload: {
 export interface QueueItem {
   file_name: string
   file_path: string
-  status: 'pending' | 'converting' | 'done' | 'failed'
+  status: 'pending' | 'waiting' | 'converting' | 'done' | 'failed'
   percent: number
   message: string
   added_at: string
