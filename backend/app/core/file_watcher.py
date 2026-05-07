@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
 
 
@@ -190,7 +190,7 @@ class MonitorService:
         self._pending_queue = asyncio.Queue()
 
         handler = _HDF5EventHandler(self)
-        self._observer = Observer()
+        self._observer = PollingObserver(timeout=2)
         self._observer.schedule(handler, str(source_dir), recursive=False)
         self._observer.start()
 
@@ -228,6 +228,11 @@ class MonitorService:
         self._emit_with_queue("info", "监控已停止")
 
     # ── Internal ──────────────────────────────────────────────────────────────
+
+    def _is_active(self, path: Path) -> bool:
+        active = {'pending', 'waiting', 'converting'}
+        return any(it.file_path == str(path) and it.status in active
+                   for it in self._conversion_items)
 
     def _enqueue_file(self, path: Path):
         """Called from watchdog thread."""
@@ -365,23 +370,18 @@ class MonitorService:
 class _HDF5EventHandler(FileSystemEventHandler):
     def __init__(self, service: MonitorService):
         self._service = service
-        self._seen: set = set()
+
+    def _handle(self, path: Path):
+        if path.suffix.lower() in {".hdf5", ".h5"} and not self._service._is_active(path):
+            self._service._enqueue_file(path)
 
     def on_created(self, event):
-        if event.is_directory:
-            return
-        path = Path(event.src_path)
-        if path.suffix.lower() in {".hdf5", ".h5"} and path not in self._seen:
-            self._seen.add(path)
-            self._service._enqueue_file(path)
+        if not event.is_directory:
+            self._handle(Path(event.src_path))
 
     def on_moved(self, event):
-        if event.is_directory:
-            return
-        path = Path(event.dest_path)
-        if path.suffix.lower() in {".hdf5", ".h5"} and path not in self._seen:
-            self._seen.add(path)
-            self._service._enqueue_file(path)
+        if not event.is_directory:
+            self._handle(Path(event.dest_path))
 
 
 monitor_service = MonitorService()
