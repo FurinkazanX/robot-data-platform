@@ -112,3 +112,26 @@ export const editValue = (payload: {
   field: string
   value: unknown
 }) => api.put('/visualize/edit', payload).then(r => r.data)
+
+// ── Monitor ────────────────────────────────────────────────────────────────
+
+export interface MonitorStatus {
+  state: 'idle' | 'monitoring'
+  is_converting: boolean
+  source_dir: string | null
+  target_dir: string | null
+}
+
+export const getMonitorStatus = () =>
+  api.get<MonitorStatus>('/monitor/status').then(r => r.data)
+
+export const startMonitor = (payload: {
+  source_dir: string
+  target_dir: string
+  field_mapping: Record<string, string>
+  source_format?: string
+  target_format?: string
+}) => api.post<{ ok: boolean; message: string }>('/monitor/start', payload).then(r => r.data)
+
+export const stopMonitor = () =>
+  api.post<{ ok: boolean; message: string }>('/monitor/stop').then(r => r.data)

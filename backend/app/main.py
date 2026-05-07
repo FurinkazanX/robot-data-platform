@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import files, convert, transfer, visualize
+from app.api import files, convert, transfer, visualize, monitor
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "static")
 
@@ -27,6 +27,7 @@ app.include_router(files.router, prefix="/api/files", tags=["files"])
 app.include_router(convert.router, prefix="/api/convert", tags=["convert"])
 app.include_router(transfer.router, prefix="/api/transfer", tags=["transfer"])
 app.include_router(visualize.router, prefix="/api/visualize", tags=["visualize"])
+app.include_router(monitor.router, prefix="/api/monitor", tags=["monitor"])
 
 # Serve React SPA — must be last
 if os.path.isdir(STATIC_DIR):

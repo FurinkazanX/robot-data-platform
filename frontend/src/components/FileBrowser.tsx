@@ -8,6 +8,8 @@ interface Props {
   onSelect?: (paths: string[], items: FileItem[]) => void
   checkable?: boolean
   filterExt?: string[]
+  dirOnly?: boolean
+  disabled?: boolean
   title?: string
 }
 
@@ -25,7 +27,7 @@ function toNode(item: FileItem): LoadedNode {
   }
 }
 
-export default function FileBrowser({ onSelect, checkable = false, filterExt, title }: Props) {
+export default function FileBrowser({ onSelect, checkable = false, filterExt, dirOnly, disabled, title }: Props) {
   const [treeData, setTreeData] = useState<LoadedNode[]>([])
   const [loading, setLoading] = useState(false)
   const [checkedKeys, setCheckedKeys] = useState<string[]>([])
@@ -37,6 +39,7 @@ export default function FileBrowser({ onSelect, checkable = false, filterExt, ti
       const { items } = await listFiles()
       const nodes = items
         .filter(i => !filterExt || i.is_dir || (i.ext && filterExt.includes(i.ext)))
+        .filter(i => !dirOnly || i.is_dir)
         .map(toNode)
       setTreeData(nodes)
     } finally {
@@ -67,6 +70,7 @@ export default function FileBrowser({ onSelect, checkable = false, filterExt, ti
     const { items } = await listFiles(key)
     const children = items
       .filter(i => !filterExt || i.is_dir || (i.ext && filterExt.includes(i.ext)))
+      .filter(i => !dirOnly || i.is_dir)
       .map(toNode)
     setTreeData(prev => updateNode(prev, key, children))
   }
@@ -102,6 +106,7 @@ export default function FileBrowser({ onSelect, checkable = false, filterExt, ti
       {loading ? <Spin /> : (
         <Tree
           checkable={checkable}
+          disabled={disabled}
           loadData={onLoadData as never}
           treeData={treeData as DataNode[]}
           checkedKeys={checkedKeys}
