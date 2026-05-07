@@ -58,6 +58,7 @@ export default function Monitor() {
 
   const [state, setState] = useState<'idle' | 'monitoring'>('idle')
   const [isConverting, setIsConverting] = useState(false)
+  const [statusLoaded, setStatusLoaded] = useState(false)
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [logs, setLogs] = useState<LogEntry[]>([])
 
@@ -66,12 +67,15 @@ export default function Monitor() {
 
   useEffect(() => {
     getConverters().then(list => setConverters(list.map(c => ({ key: c.key, name: c.name }))))
-    getMonitorStatus().then(s => {
-      setState(s.state as 'idle' | 'monitoring')
-      setIsConverting(s.is_converting)
-      setQueue(s.queue ?? [])
-      if (s.state === 'monitoring') connectWs()
-    }).catch(() => {})
+    getMonitorStatus()
+      .then(s => {
+        setState(s.state as 'idle' | 'monitoring')
+        setIsConverting(s.is_converting)
+        setQueue(s.queue ?? [])
+        if (s.state === 'monitoring') connectWs()
+      })
+      .catch(() => message.warning('获取监控状态失败，请刷新页面'))
+      .finally(() => setStatusLoaded(true))
   }, [])
 
   useEffect(() => {
@@ -130,6 +134,18 @@ export default function Monitor() {
     }
   }
 
+  const syncStatus = async () => {
+    try {
+      const s = await getMonitorStatus()
+      setState(s.state as 'idle' | 'monitoring')
+      setIsConverting(s.is_converting)
+      setQueue(s.queue ?? [])
+      if (s.state === 'monitoring') connectWs()
+    } catch {
+      message.error('获取监控状态失败')
+    }
+  }
+
   const handleStart = async () => {
     if (!sourceDir) return message.warning('请选择监控目录')
     if (!targetDir) return message.warning('请选择目标目录')
@@ -151,7 +167,12 @@ export default function Monitor() {
       message.success('监控已启动')
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      message.error('启动失败: ' + (detail ?? '未知错误'))
+      if (detail?.includes('已在运行中')) {
+        message.warning('监控已在运行，正在同步状态...')
+        await syncStatus()
+      } else {
+        message.error('启动失败: ' + (detail ?? '未知错误'))
+      }
     }
   }
 
@@ -261,12 +282,13 @@ export default function Monitor() {
       <Divider />
       <Space>
         <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleStart}
-          disabled={state === 'monitoring' || !sourceDir || !targetDir}>
+          disabled={!statusLoaded || state === 'monitoring' || !sourceDir || !targetDir}>
           开始监控
         </Button>
         <Tooltip title={isConverting ? '正在转换数据，转换完成后才能停止监控' : ''}
           open={isConverting ? undefined : false}>
-          <Button danger icon={<PauseCircleOutlined />} onClick={handleStop} disabled={stopDisabled}>
+          <Button danger icon={<PauseCircleOutlined />} onClick={handleStop}
+            disabled={!statusLoaded || stopDisabled}>
             停止监控
           </Button>
         </Tooltip>
