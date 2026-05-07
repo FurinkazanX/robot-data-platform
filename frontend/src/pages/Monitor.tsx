@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  Alert, Badge, Button, Col, Divider, Form, Progress, Row, Select,
+  Alert, AutoComplete, Badge, Button, Col, Divider, Form, Progress, Row, Select,
   Space, Spin, Table, Tag, Tooltip, Typography, message,
 } from 'antd'
 import {
@@ -202,8 +202,9 @@ export default function Monitor() {
       title: 'LeRobot 字段',
       dataIndex: 'lerobot_field',
       render: (val: string, _: MappingRow, idx: number) => (
-        <Select value={val} style={{ width: '100%' }} allowClear showSearch
+        <AutoComplete value={val} style={{ width: '100%' }} allowClear
           options={LEROBOT_FIELDS.map(f => ({ label: f, value: f }))}
+          filterOption={(input, opt) => (opt?.value as string).toLowerCase().includes(input.toLowerCase())}
           onChange={v => setMapping(prev => prev.map((r, i) => i === idx ? { ...r, lerobot_field: v ?? '' } : r))}
         />
       ),

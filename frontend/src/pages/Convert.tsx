@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  Alert, Button, Col, Divider, Form, Modal,
+  Alert, AutoComplete, Button, Col, Divider, Form, Modal,
   Progress, Row, Select, Space, Switch, Table, Tag, Typography, message,
 } from 'antd'
 import { InfoCircleOutlined, StopOutlined } from '@ant-design/icons'
@@ -129,8 +129,9 @@ export default function Convert() {
       title: 'LeRobot 字段',
       dataIndex: 'lerobot_field',
       render: (val: string, _: MappingRow, idx: number) => (
-        <Select value={val} style={{ width: '100%' }} allowClear showSearch
+        <AutoComplete value={val} style={{ width: '100%' }} allowClear
           options={LEROBOT_FIELDS.map(f => ({ label: f, value: f }))}
+          filterOption={(input, opt) => (opt?.value as string).toLowerCase().includes(input.toLowerCase())}
           onChange={v => setMapping(prev => prev.map((r, i) => i === idx ? { ...r, lerobot_field: v ?? '' } : r))}
         />
       ),
