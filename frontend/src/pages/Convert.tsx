@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  Alert, Button, Col, Divider, Form, Input, Modal,
+  Alert, Button, Col, Divider, Form, Modal,
   Progress, Row, Select, Space, Switch, Table, Tag, Typography, message,
 } from 'antd'
 import { InfoCircleOutlined } from '@ant-design/icons'
@@ -150,11 +150,14 @@ export default function Convert() {
           <Button style={{ marginTop: 8 }} onClick={handlePreview}>解析字段结构</Button>
         </Col>
         <Col span={12}>
-          <Form layout="vertical">
-            <Form.Item label="目标数据集路径（相对于数据根目录）">
-              <Input placeholder="e.g. output/my_lerobot_dataset" value={dstPath}
-                onChange={e => setDstPath(e.target.value)} />
-            </Form.Item>
+          <FileBrowser title="目标数据集目录" dirOnly fileOps
+            onSelect={(_, items) => setDstPath(items[0]?.path ?? '')} />
+          {dstPath && (
+            <Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 12 }}>
+              已选: {dstPath}
+            </Text>
+          )}
+          <Form layout="vertical" style={{ marginTop: 12 }}>
             <Form.Item label="增量追加（保留已有 episode）">
               <Switch checked={incremental} onChange={setIncremental} />
             </Form.Item>
