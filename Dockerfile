@@ -4,7 +4,7 @@ WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm install
 COPY frontend/ ./
-RUN npm run build
+RUN NODE_OPTIONS='--max-old-space-size=4096' npm run build
 
 # ── Stage 2: Python runtime ───────────────────────────────────────────────────
 FROM python:3.11-slim
