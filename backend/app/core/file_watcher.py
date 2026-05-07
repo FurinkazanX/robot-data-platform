@@ -244,41 +244,59 @@ class MonitorService:
 
     async def _wait_file_stable(
         self, path: Path, item: ConversionItem,
-        poll_interval: float = 1.0, stable_required: int = 3, timeout: float = 300.0,
+        poll_interval: float = 1.0,
+        stable_required: int = 10,   # 10 consecutive stable seconds → file done
+        stall_timeout: float = 300.0, # 5 min with NO growth at all → assume transfer died
     ) -> bool:
-        prev_size = -1
-        stable = 0
-        elapsed = 0.0
+        """Determine when a file is fully written.
 
-        while elapsed < timeout and self._state == MonitorState.MONITORING:
+        - As long as the file is still growing, we wait indefinitely (no global timeout).
+        - Once size stops changing for `stable_required` seconds → file done → start convert.
+        - If size never changes for `stall_timeout` seconds total → transfer died → error.
+        """
+        prev_size = -1
+        stable = 0          # consecutive polls where size == prev_size
+        no_growth = 0.0     # total seconds without any size increase (resets on growth)
+
+        while self._state == MonitorState.MONITORING:
             try:
                 size = path.stat().st_size
             except OSError:
+                no_growth += poll_interval
+                if no_growth >= stall_timeout:
+                    return False
                 await asyncio.sleep(poll_interval)
-                elapsed += poll_interval
                 continue
 
             size_mb = size / 1024 / 1024
-            if prev_size >= 0 and size != prev_size:
-                speed_mb = (size - prev_size) / poll_interval / 1024 / 1024
-                speed_str = f"  {speed_mb:.1f} MB/s" if speed_mb > 0.01 else ""
-            else:
-                speed_str = ""
 
-            if size > 0 and size == prev_size:
-                stable += 1
-                item.message = f"写入稳定中…（{stable}/{stable_required}）{size_mb:.1f} MB"
-                if stable >= stable_required:
-                    return True
-            else:
+            if size != prev_size:
+                # File is still growing — reset both counters
+                if prev_size >= 0:
+                    speed_mb = (size - prev_size) / poll_interval / 1024 / 1024
+                    speed_str = f"  {speed_mb:.1f} MB/s" if speed_mb > 0.01 else ""
+                else:
+                    speed_str = ""
                 stable = 0
+                no_growth = 0.0
                 item.message = f"写入中… {size_mb:.1f} MB{speed_str}"
+            else:
+                # Size unchanged this poll
+                stable += 1
+                no_growth += poll_interval
+                if size > 0:
+                    item.message = f"写入稳定中…（{stable}/{stable_required}）{size_mb:.1f} MB"
+                    if stable >= stable_required:
+                        return True   # confirmed done
+                else:
+                    item.message = "等待文件写入…"
+
+                if no_growth >= stall_timeout:
+                    return False      # never grew — transfer died
 
             prev_size = size
-            # Use "progress" type so the log panel is not flooded; queue still updates
             self._emit_with_queue("progress", "")
             await asyncio.sleep(poll_interval)
-            elapsed += poll_interval
 
         return False
 
@@ -313,7 +331,7 @@ class MonitorService:
             stable = await self._wait_file_stable(file_path, item)
             if not stable:
                 item.status = "failed"
-                item.message = "等待超时（5分钟），文件可能仍在传输中"
+                item.message = "超时：文件长时间未变化，可能传输已中断"
                 self._emit_with_queue("error", f"等待超时: {file_path.name}")
                 continue
 
