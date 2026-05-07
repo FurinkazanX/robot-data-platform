@@ -1,5 +1,7 @@
 """Directory monitoring service for real-time data conversion."""
 import asyncio
+import json
+import os
 import threading
 from dataclasses import dataclass, field as dc_field
 from datetime import datetime
@@ -19,10 +21,14 @@ class MonitorState:
 class ConversionItem:
     file_path: str
     file_name: str
-    status: str = "pending"   # pending | converting | done | failed
+    status: str = "pending"   # pending | waiting | converting | done | failed
     percent: float = 0.0
     message: str = ""
     added_at: str = dc_field(default_factory=lambda: datetime.now().isoformat())
+
+
+# Persists monitor config across container restarts (written to the data volume)
+_CONFIG_PATH = Path(os.environ.get("DATA_ROOT", "/data")) / ".monitor_config.json"
 
 
 class MonitorService:
@@ -118,6 +124,47 @@ class MonitorService:
             "queue": snapshot,
         })
 
+    # ── Config persistence ────────────────────────────────────────────────────
+
+    def _save_config(self):
+        try:
+            _CONFIG_PATH.write_text(json.dumps({
+                "source_dir": str(self._source_dir),
+                "target_dir": str(self._target_dir),
+                "field_mapping": self._field_mapping,
+                "source_format": self._source_format,
+                "target_format": self._target_format,
+            }))
+        except Exception:
+            pass
+
+    def _clear_config(self):
+        try:
+            _CONFIG_PATH.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    async def try_resume(self):
+        """Called on app startup: resume monitoring if a saved config exists."""
+        if not _CONFIG_PATH.exists():
+            return
+        try:
+            cfg = json.loads(_CONFIG_PATH.read_text())
+            src = Path(cfg["source_dir"])
+            dst = Path(cfg["target_dir"])
+            if not src.is_dir() or not dst.is_dir():
+                self._clear_config()
+                return
+            await self.start(
+                source_dir=src,
+                target_dir=dst,
+                field_mapping=cfg.get("field_mapping", {}),
+                source_format=cfg.get("source_format", "hdf5"),
+                target_format=cfg.get("target_format", "lerobot"),
+            )
+        except Exception:
+            self._clear_config()
+
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def start(
@@ -148,6 +195,7 @@ class MonitorService:
         self._observer.start()
 
         self._convert_task = asyncio.create_task(self._convert_worker())
+        self._save_config()
         self._emit({
             "type": "info",
             "message": f"开始监控: {source_dir}  →  {target_dir}",
@@ -176,6 +224,7 @@ class MonitorService:
         self._convert_task = None
         self._pending_queue = None
         self._state = MonitorState.IDLE
+        self._clear_config()
         self._emit_with_queue("info", "监控已停止")
 
     # ── Internal ──────────────────────────────────────────────────────────────
