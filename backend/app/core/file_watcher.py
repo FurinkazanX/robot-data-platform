@@ -246,11 +246,6 @@ class MonitorService:
         self, path: Path, item: ConversionItem,
         poll_interval: float = 1.0, stable_required: int = 3, timeout: float = 300.0,
     ) -> bool:
-        """Poll file size until unchanged for `stable_required` consecutive checks.
-
-        Returns True when stable, False on timeout or if monitoring stopped.
-        Sets item.message so the UI shows live wait feedback.
-        """
         prev_size = -1
         stable = 0
         elapsed = 0.0
@@ -263,17 +258,25 @@ class MonitorService:
                 elapsed += poll_interval
                 continue
 
+            size_mb = size / 1024 / 1024
+            if prev_size >= 0 and size != prev_size:
+                speed_mb = (size - prev_size) / poll_interval / 1024 / 1024
+                speed_str = f"  {speed_mb:.1f} MB/s" if speed_mb > 0.01 else ""
+            else:
+                speed_str = ""
+
             if size > 0 and size == prev_size:
                 stable += 1
-                item.message = f"等待文件写入完成…（已稳定 {stable}/{stable_required}）"
+                item.message = f"写入稳定中…（{stable}/{stable_required}）{size_mb:.1f} MB"
                 if stable >= stable_required:
                     return True
             else:
                 stable = 0
-                item.message = f"等待文件写入完成…（大小 {size / 1024 / 1024:.1f} MB）"
+                item.message = f"写入中… {size_mb:.1f} MB{speed_str}"
 
             prev_size = size
-            self._emit_with_queue("info", item.message)
+            # Use "progress" type so the log panel is not flooded; queue still updates
+            self._emit_with_queue("progress", "")
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
 

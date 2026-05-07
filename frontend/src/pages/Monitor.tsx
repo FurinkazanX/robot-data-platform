@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Alert, Badge, Button, Col, Divider, Form, Progress, Row, Select,
-  Space, Table, Tag, Tooltip, Typography, message,
+  Space, Spin, Table, Tag, Tooltip, Typography, message,
 } from 'antd'
 import {
-  ClearOutlined, EyeOutlined, PauseCircleOutlined, PlayCircleOutlined,
+  ClearOutlined, EyeOutlined, PauseCircleOutlined, PlayCircleOutlined, LoadingOutlined,
 } from '@ant-design/icons'
 import FileBrowser from '../components/FileBrowser'
 import {
@@ -330,16 +330,26 @@ export default function Monitor() {
                     </Text>
                     <Tag color={tag.color} style={{ margin: 0 }}>{tag.label}</Tag>
                   </div>
-                  <Progress
-                    percent={Math.round(item.percent)}
-                    size="small"
-                    status={progressStatus}
-                    strokeColor={item.status === 'converting' ? undefined : undefined}
-                  />
-                  {item.message && (
-                    <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 2 }}>
-                      {item.message}
-                    </Text>
+                  {item.status === 'waiting' ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
+                      <Spin size="small" indicator={<LoadingOutlined spin style={{ fontSize: 14, color: '#faad14' }} />} />
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {item.message || '等待文件写入完成…'}
+                      </Text>
+                    </div>
+                  ) : (
+                    <>
+                      <Progress
+                        percent={Math.round(item.percent)}
+                        size="small"
+                        status={progressStatus}
+                      />
+                      {item.message && (
+                        <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 2 }}>
+                          {item.message}
+                        </Text>
+                      )}
+                    </>
                   )}
                 </div>
               )
