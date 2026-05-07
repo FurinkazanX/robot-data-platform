@@ -2,7 +2,6 @@ import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-do
 import { Layout, Menu } from 'antd'
 import {
   SwapOutlined, CloudUploadOutlined, PlayCircleOutlined,
-  EyeOutlined, UnorderedListOutlined,
 } from '@ant-design/icons'
 import Convert from './pages/Convert'
 import Transfer from './pages/Transfer'
@@ -17,8 +16,6 @@ const NAV = [
   { key: '/convert',  icon: <SwapOutlined />,          label: <Link to="/convert">数据转换</Link> },
   { key: '/transfer', icon: <CloudUploadOutlined />,    label: <Link to="/transfer">文件传输</Link> },
   { key: '/visualize',icon: <PlayCircleOutlined />,     label: <Link to="/visualize">数据可视化</Link> },
-  { key: '/monitor',  icon: <EyeOutlined />,            label: <Link to="/monitor">数据监控</Link> },
-  { key: '/tasks',    icon: <UnorderedListOutlined />,  label: <Link to="/tasks">任务管理</Link> },
 ]
 
 function AppLayout() {
