@@ -1,0 +1,18 @@
+services:
+  app:
+    build: .
+    image: robot-data-platform:latest
+    container_name: robot-data-platform
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount your robot data directory here
+      - ${DATA_DIR:-./data}:/data
+    environment:
+      - DATA_ROOT=/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/files/list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
