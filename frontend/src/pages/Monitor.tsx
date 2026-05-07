@@ -63,7 +63,7 @@ export default function Monitor() {
   const [logs, setLogs] = useState<LogEntry[]>([])
 
   const wsRef = useRef<WebSocket | null>(null)
-  const logEndRef = useRef<HTMLDivElement>(null)
+  const logContainerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     getConverters().then(list => setConverters(list.map(c => ({ key: c.key, name: c.name }))))
@@ -79,7 +79,8 @@ export default function Monitor() {
   }, [])
 
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = logContainerRef.current
+    if (el) el.scrollTop = el.scrollHeight
   }, [logs])
 
   const connectWs = () => {
@@ -351,7 +352,7 @@ export default function Monitor() {
       {logs.length > 0 && (
         <>
           <Divider>系统日志</Divider>
-          <div style={{
+          <div ref={logContainerRef} style={{
             background: '#141414', borderRadius: 6, padding: '12px 16px',
             maxHeight: 200, overflowY: 'auto', fontFamily: 'monospace', fontSize: 12,
           }}>
@@ -366,7 +367,6 @@ export default function Monitor() {
                 <Text style={{ color: '#d4d4d4', wordBreak: 'break-all' }}>{log.message}</Text>
               </div>
             ))}
-            <div ref={logEndRef} />
           </div>
         </>
       )}
