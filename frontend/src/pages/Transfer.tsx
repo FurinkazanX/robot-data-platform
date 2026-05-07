@@ -5,14 +5,14 @@ import {
 } from 'antd'
 import {
   ArrowRightOutlined, FolderAddOutlined, EditOutlined,
-  DeleteOutlined, FolderOutlined, FileOutlined,
+  DeleteOutlined, FolderOutlined, FileOutlined, StopOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { Tree } from 'antd'
 import type { DataNode } from 'antd/es/tree'
 import FileBrowser from '../components/FileBrowser'
 import {
-  testConnection, listRemote, startTransfer,
+  testConnection, listRemote, startTransfer, cancelTransfer,
   remoteMkdir, remoteRename, remoteDelete,
   type SSHCreds,
 } from '../api/client'
@@ -193,9 +193,20 @@ export default function Transfer() {
     }
   }
 
+  const handleStop = async () => {
+    if (!jobId) return
+    try {
+      await cancelTransfer(jobId)
+      message.info('已发送停止指令，当前文件传输完成后停止')
+    } catch {
+      message.error('停止失败')
+    }
+  }
+
   const pct = typeof (progress as { percent?: number }).percent === 'number'
     ? (progress as { percent: number }).percent : 0
   const status = (progress as { status?: string }).status
+  const isCancelled = status === 'cancelled'
 
   return (
     <div>
@@ -227,11 +238,16 @@ export default function Transfer() {
             onSelect={(_, items) => setTransfer({ localFiles: items })} />
         </Col>
 
-        <Col span={2} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 40 }}>
+        <Col span={2} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 40, gap: 8 }}>
           <Button type="primary" icon={<ArrowRightOutlined />}
             disabled={!connected || !localFiles.length} loading={running} onClick={handleTransfer}>
             上传
           </Button>
+          {jobId && (
+            <Button danger icon={<StopOutlined />} onClick={handleStop} disabled={!running}>
+              停止
+            </Button>
+          )}
         </Col>
 
         <Col span={11}>
@@ -299,9 +315,12 @@ export default function Transfer() {
           <Text type="secondary">任务 ID: {jobId}</Text>
           <Progress
             percent={pct}
-            status={status === 'failed' ? 'exception' : status === 'done' ? 'success' : 'active'}
+            status={status === 'failed' ? 'exception' : status === 'done' ? 'success' : isCancelled ? 'exception' : 'active'}
             style={{ marginTop: 8 }}
           />
+          {isCancelled && (
+            <div><Text type="warning">传输已取消</Text></div>
+          )}
           {(progress as { message?: string }).message && (
             <div><Text type="secondary">{(progress as { message?: string }).message}</Text></div>
           )}

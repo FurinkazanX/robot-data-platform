@@ -81,6 +81,10 @@ async def start_conversion(req: ConvertRequest):
             loop = asyncio.get_running_loop()
 
             for i, src_rel in enumerate(req.src_paths):
+                if job.cancelled:
+                    job.update(status=JobStatus.CANCELLED, message="已取消")
+                    return
+
                 try:
                     src = _abs(src_rel)
                 except ValueError as e:
@@ -118,6 +122,15 @@ async def start_conversion(req: ConvertRequest):
     return {"job_id": job.job_id}
 
 
+@router.post("/cancel/{job_id}")
+async def cancel_job(job_id: str):
+    job = job_manager.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job.cancel()
+    return {"ok": True}
+
+
 @router.get("/jobs")
 def list_jobs():
     return job_manager.list_all()
@@ -146,7 +159,7 @@ async def job_ws(websocket: WebSocket, job_id: str):
             try:
                 update = await asyncio.wait_for(q.get(), timeout=30)
                 await websocket.send_json(update)
-                if update["status"] in (JobStatus.DONE, JobStatus.FAILED):
+                if update["status"] in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
                     break
             except asyncio.TimeoutError:
                 await websocket.send_json({"ping": True})

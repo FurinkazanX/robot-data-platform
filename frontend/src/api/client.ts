@@ -58,6 +58,9 @@ export const startConversion = (payload: {
 export const getConverters = () =>
   api.get<Array<{ key: string; source: string; target: string; name: string }>>('/convert/converters').then(r => r.data)
 
+export const cancelConversion = (jobId: string) =>
+  api.post(`/convert/cancel/${jobId}`).then(r => r.data)
+
 // ── Transfer ───────────────────────────────────────────────────────────────
 
 export interface SSHCreds {
@@ -85,6 +88,9 @@ export const remoteDelete = (creds: SSHCreds, path: string) =>
 
 export const startTransfer = (payload: SSHCreds & { local_paths: string[]; remote_base: string }) =>
   api.post<{ job_id: string }>('/transfer/start', payload).then(r => r.data)
+
+export const cancelTransfer = (jobId: string) =>
+  api.post(`/transfer/cancel/${jobId}`).then(r => r.data)
 
 // ── Visualize ──────────────────────────────────────────────────────────────
 

@@ -11,6 +11,7 @@ class JobStatus(str, Enum):
     RUNNING = "running"
     DONE = "done"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -22,11 +23,14 @@ class JobProgress:
     current_file: str = ""
     message: str = ""
     error: str = ""
+    cancelled: bool = False
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
     _subscribers: List[asyncio.Queue] = field(default_factory=list, repr=False)
-    # History replay: every update is appended here
     _history: List[Dict[str, Any]] = field(default_factory=list, repr=False)
+
+    def cancel(self):
+        self.cancelled = True
 
     def to_dict(self) -> Dict[str, Any]:
         return {

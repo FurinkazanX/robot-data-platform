@@ -117,6 +117,10 @@ async def start_transfer(req: TransferRequest):
             transfer.connect()
             loop = asyncio.get_running_loop()
             for i, local_rel in enumerate(req.local_paths):
+                if job.cancelled:
+                    transfer.disconnect()
+                    job.update(status=JobStatus.CANCELLED, message="已取消")
+                    return
                 local = _abs(local_rel)
                 remote = f"{req.remote_base.rstrip('/')}/{local.name}"
                 job.update(current=i, current_file=local.name, status=JobStatus.RUNNING,
@@ -142,6 +146,15 @@ async def start_transfer(req: TransferRequest):
     return {"job_id": job.job_id}
 
 
+@router.post("/cancel/{job_id}")
+async def cancel_transfer_job(job_id: str):
+    job = job_manager.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job.cancel()
+    return {"ok": True}
+
+
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str):
     job = job_manager.get(job_id)
@@ -164,7 +177,7 @@ async def transfer_ws(websocket: WebSocket, job_id: str):
             try:
                 update = await asyncio.wait_for(q.get(), timeout=30)
                 await websocket.send_json(update)
-                if update["status"] in (JobStatus.DONE, JobStatus.FAILED):
+                if update["status"] in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
                     break
             except asyncio.TimeoutError:
                 await websocket.send_json({"ping": True})

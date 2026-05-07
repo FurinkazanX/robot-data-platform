@@ -3,10 +3,10 @@ import {
   Alert, Button, Col, Divider, Form, Modal,
   Progress, Row, Select, Space, Switch, Table, Tag, Typography, message,
 } from 'antd'
-import { InfoCircleOutlined } from '@ant-design/icons'
+import { InfoCircleOutlined, StopOutlined } from '@ant-design/icons'
 import FileBrowser from '../components/FileBrowser'
 import {
-  getConverters, previewFile, startConversion,
+  getConverters, previewFile, startConversion, cancelConversion,
   type PreviewResult, type FileItem,
 } from '../api/client'
 import { useAppContext } from '../context/AppContext'
@@ -110,6 +110,16 @@ export default function Convert() {
     }
   }
 
+  const handleStop = async () => {
+    if (!jobId) return
+    try {
+      await cancelConversion(jobId)
+      message.info('已发送停止指令，当前文件处理完成后停止')
+    } catch {
+      message.error('停止失败')
+    }
+  }
+
   const mappingCols = [
     { title: 'HDF5 字段', dataIndex: 'hdf5_key', width: 220 },
     { title: '形状', dataIndex: 'shape', width: 110 },
@@ -131,6 +141,7 @@ export default function Convert() {
     ? (progress as { percent: number }).percent : 0
   const status = (progress as { status?: string }).status
   const errorText = (progress as { error?: string }).error ?? ''
+  const isCancelled = status === 'cancelled'
 
   return (
     <div>
@@ -177,6 +188,10 @@ export default function Convert() {
         <Button type="primary" loading={running} onClick={handleConvert} disabled={!srcFiles.length || !dstPath}>
           开始转换
         </Button>
+        <Button danger icon={<StopOutlined />} onClick={handleStop}
+          disabled={!running} hidden={!jobId}>
+          停止转换
+        </Button>
       </Space>
 
       {jobId && (
@@ -184,9 +199,12 @@ export default function Convert() {
           <Text type="secondary">任务 ID: {jobId}</Text>
           <Progress
             percent={pct}
-            status={status === 'failed' ? 'exception' : status === 'done' ? 'success' : 'active'}
+            status={status === 'failed' ? 'exception' : status === 'done' ? 'success' : isCancelled ? 'exception' : 'active'}
             style={{ marginTop: 8 }}
           />
+          {isCancelled && (
+            <Alert type="warning" message="转换已取消" style={{ marginTop: 8 }} showIcon />
+          )}
           {(progress as { message?: string }).message && (
             <div><Text type="secondary">{(progress as { message?: string }).message}</Text></div>
           )}
