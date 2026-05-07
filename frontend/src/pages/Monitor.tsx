@@ -4,12 +4,11 @@ import {
   Space, Spin, Table, Tag, Tooltip, Typography, message,
 } from 'antd'
 import {
-  ClearOutlined, EyeOutlined, PauseCircleOutlined, PlayCircleOutlined, LoadingOutlined,
+  ClearOutlined, EyeOutlined, LoadingOutlined, PauseCircleOutlined, PlayCircleOutlined,
 } from '@ant-design/icons'
 import FileBrowser from '../components/FileBrowser'
 import {
-  getConverters, listFiles, previewFile,
-  startMonitor, stopMonitor, getMonitorStatus,
+  getConverters, getMonitorStatus, listFiles, previewFile, startMonitor, stopMonitor,
   type FileItem, type PreviewResult, type QueueItem,
 } from '../api/client'
 
@@ -29,23 +28,12 @@ interface MappingRow {
   lerobot_field: string
 }
 
-interface LogEntry {
-  timestamp: string
-  type: string
-  message: string
-}
-
 const STATUS_TAG: Record<string, { color: string; label: string }> = {
   waiting:    { color: 'gold',       label: '等待就绪' },
   pending:    { color: 'default',    label: '排队中'   },
   converting: { color: 'processing', label: '转换中'   },
   done:       { color: 'success',    label: '已完成'   },
   failed:     { color: 'error',      label: '失败'     },
-}
-
-const LOG_TAG_COLOR: Record<string, string> = {
-  info: 'blue', done: 'green', error: 'red',
-  warning: 'orange', converting: 'processing', detected: 'purple',
 }
 
 export default function Monitor() {
@@ -56,60 +44,30 @@ export default function Monitor() {
   const [mapping, setMapping] = useState<MappingRow[]>([])
   const [preview, setPreview] = useState<PreviewResult | null>(null)
 
-  const [state, setState] = useState<'idle' | 'monitoring'>('idle')
+  const [monitorState, setMonitorState] = useState<'idle' | 'monitoring'>('idle')
   const [isConverting, setIsConverting] = useState(false)
   const [statusLoaded, setStatusLoaded] = useState(false)
   const [queue, setQueue] = useState<QueueItem[]>([])
-  const [logs, setLogs] = useState<LogEntry[]>([])
+  const [runningDirs, setRunningDirs] = useState<{ source?: string; target?: string }>({})
 
-  const wsRef = useRef<WebSocket | null>(null)
-  const logContainerRef = useRef<HTMLDivElement>(null)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const fetchStatus = async () => {
+    try {
+      const s = await getMonitorStatus()
+      setMonitorState(s.state as 'idle' | 'monitoring')
+      setIsConverting(s.is_converting)
+      setQueue(s.queue ?? [])
+      setRunningDirs({ source: s.source_dir, target: s.target_dir })
+    } catch {}
+  }
 
   useEffect(() => {
     getConverters().then(list => setConverters(list.map(c => ({ key: c.key, name: c.name }))))
-    getMonitorStatus()
-      .then(s => {
-        setState(s.state as 'idle' | 'monitoring')
-        setIsConverting(s.is_converting)
-        setQueue(s.queue ?? [])
-        if (s.state === 'monitoring') connectWs()
-      })
-      .catch(() => message.warning('获取监控状态失败，请刷新页面'))
-      .finally(() => setStatusLoaded(true))
+    fetchStatus().finally(() => setStatusLoaded(true))
+    timerRef.current = setInterval(fetchStatus, 3000)
+    return () => { if (timerRef.current) clearInterval(timerRef.current) }
   }, [])
-
-  useEffect(() => {
-    const el = logContainerRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [logs])
-
-  const connectWs = () => {
-    if (wsRef.current) return
-    const protocol = location.protocol === 'https:' ? 'wss' : 'ws'
-    const ws = new WebSocket(`${protocol}://${location.host}/api/monitor/ws`)
-    ws.onmessage = e => {
-      const data = JSON.parse(e.data)
-      if (data.type === 'ping') return
-      if (data.queue !== undefined) setQueue(data.queue)
-      if (data.state !== undefined) setState(data.state)
-      if (data.is_converting !== undefined) setIsConverting(data.is_converting)
-      // Only add non-progress events to the text log
-      if (data.type !== 'progress' && data.message) {
-        setLogs(prev => [...prev, {
-          timestamp: data.timestamp ?? new Date().toISOString(),
-          type: data.type ?? 'info',
-          message: data.message,
-        }])
-      }
-    }
-    ws.onclose = () => { wsRef.current = null }
-    wsRef.current = ws
-  }
-
-  const disconnectWs = () => {
-    wsRef.current?.close()
-    wsRef.current = null
-  }
 
   const handlePreviewDir = async () => {
     if (!sourceDir) return message.warning('请先选择监控目录')
@@ -135,25 +93,13 @@ export default function Monitor() {
     }
   }
 
-  const syncStatus = async () => {
-    try {
-      const s = await getMonitorStatus()
-      setState(s.state as 'idle' | 'monitoring')
-      setIsConverting(s.is_converting)
-      setQueue(s.queue ?? [])
-      if (s.state === 'monitoring') connectWs()
-    } catch {
-      message.error('获取监控状态失败')
-    }
-  }
-
   const handleStart = async () => {
     if (!sourceDir) return message.warning('请选择监控目录')
     if (!targetDir) return message.warning('请选择目标目录')
     const field_mapping: Record<string, string> = {}
     mapping.forEach(r => { if (r.lerobot_field) field_mapping[r.hdf5_key] = r.lerobot_field })
+    const [srcFmt, tgtFmt] = selectedConverter.split('->')
     try {
-      const [srcFmt, tgtFmt] = selectedConverter.split('->')
       await startMonitor({
         source_dir: sourceDir.path,
         target_dir: targetDir.path,
@@ -161,16 +107,15 @@ export default function Monitor() {
         source_format: srcFmt,
         target_format: tgtFmt,
       })
-      setLogs([])
       setQueue([])
-      setState('monitoring')
-      connectWs()
+      setMonitorState('monitoring')
+      setRunningDirs({ source: sourceDir.path, target: targetDir.path })
       message.success('监控已启动')
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
       if (detail?.includes('已在运行中')) {
         message.warning('监控已在运行，正在同步状态...')
-        await syncStatus()
+        await fetchStatus()
       } else {
         message.error('启动失败: ' + (detail ?? '未知错误'))
       }
@@ -180,8 +125,7 @@ export default function Monitor() {
   const handleStop = async () => {
     try {
       await stopMonitor()
-      disconnectWs()
-      setState('idle')
+      setMonitorState('idle')
       setIsConverting(false)
       message.success('监控已停止')
     } catch (e: unknown) {
@@ -211,31 +155,37 @@ export default function Monitor() {
     },
   ]
 
-  const stopDisabled = isConverting || state === 'idle'
+  const stopDisabled = isConverting || monitorState === 'idle'
   const doneCount = queue.filter(it => it.status === 'done' || it.status === 'failed').length
 
   return (
     <div>
-      <Title level={4}>数据监控转换</Title>
+      <Title level={4}>数据监控</Title>
 
       <div style={{ marginBottom: 16 }}>
-        {state === 'monitoring' ? (
-          <Badge status="processing" text={
-            isConverting
-              ? <Text type="warning">监控中（正在转换…）</Text>
-              : <Text type="success">监控中（等待新文件）</Text>
-          } />
+        {monitorState === 'monitoring' ? (
+          <Space>
+            <Badge status="processing" text={
+              isConverting
+                ? <Text type="warning">监控中（正在转换…）</Text>
+                : <Text type="success">监控中（等待新文件）</Text>
+            } />
+            {runningDirs.source && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {runningDirs.source} → {runningDirs.target}
+              </Text>
+            )}
+          </Space>
         ) : (
           <Badge status="default" text={<Text type="secondary">未监控</Text>} />
         )}
       </div>
 
-      {/* Config */}
       <Form layout="vertical">
         <Form.Item label="转换类型">
           <Select value={selectedConverter} onChange={setSelectedConverter} style={{ width: 240 }}
             options={converters.map(c => ({ label: c.name, value: c.key }))}
-            disabled={state === 'monitoring'} />
+            disabled={monitorState === 'monitoring'} />
         </Form.Item>
       </Form>
 
@@ -243,21 +193,21 @@ export default function Monitor() {
         <Col span={12}>
           <FileBrowser title="监控目录（源数据）" dirOnly fileOps
             onSelect={(_, items) => setSourceDir(items[0] ?? null)}
-            disabled={state === 'monitoring'} />
+            disabled={monitorState === 'monitoring'} />
           {sourceDir && (
             <Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 12 }}>
               已选: {sourceDir.path}
             </Text>
           )}
           <Button icon={<EyeOutlined />} style={{ marginTop: 8 }} onClick={handlePreviewDir}
-            disabled={!sourceDir || state === 'monitoring'}>
+            disabled={!sourceDir || monitorState === 'monitoring'}>
             自动检测字段映射
           </Button>
         </Col>
         <Col span={12}>
           <FileBrowser title="目标目录（输出数据集）" dirOnly fileOps
             onSelect={(_, items) => setTargetDir(items[0] ?? null)}
-            disabled={state === 'monitoring'} />
+            disabled={monitorState === 'monitoring'} />
           {targetDir && (
             <Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 12 }}>
               已选: {targetDir.path}
@@ -280,11 +230,10 @@ export default function Monitor() {
           message="未配置字段映射 — 系统将在每个新文件到达时自动推断字段映射。建议提前选择样本文件进行配置以确保准确性。" />
       )}
 
-      {/* Controls */}
       <Divider />
       <Space>
         <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleStart}
-          disabled={!statusLoaded || state === 'monitoring' || !sourceDir || !targetDir}>
+          disabled={!statusLoaded || monitorState === 'monitoring' || !sourceDir || !targetDir}>
           开始监控
         </Button>
         <Tooltip title={isConverting ? '正在转换数据，转换完成后才能停止监控' : ''}
@@ -296,7 +245,6 @@ export default function Monitor() {
         </Tooltip>
       </Space>
 
-      {/* Conversion queue */}
       {queue.length > 0 && (
         <>
           <Divider>
@@ -340,11 +288,7 @@ export default function Monitor() {
                     </div>
                   ) : (
                     <>
-                      <Progress
-                        percent={Math.round(item.percent)}
-                        size="small"
-                        status={progressStatus}
-                      />
+                      <Progress percent={Math.round(item.percent)} size="small" status={progressStatus} />
                       {item.message && (
                         <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 2 }}>
                           {item.message}
@@ -355,29 +299,6 @@ export default function Monitor() {
                 </div>
               )
             })}
-          </div>
-        </>
-      )}
-
-      {/* System log */}
-      {logs.length > 0 && (
-        <>
-          <Divider>系统日志</Divider>
-          <div ref={logContainerRef} style={{
-            background: '#141414', borderRadius: 6, padding: '12px 16px',
-            maxHeight: 200, overflowY: 'auto', fontFamily: 'monospace', fontSize: 12,
-          }}>
-            {logs.map((log, i) => (
-              <div key={i} style={{ marginBottom: 4, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                <Text style={{ color: '#666', whiteSpace: 'nowrap', fontSize: 11 }}>
-                  {log.timestamp.replace('T', ' ').slice(0, 19)}
-                </Text>
-                <Tag color={LOG_TAG_COLOR[log.type] ?? 'default'} style={{ margin: 0, flexShrink: 0 }}>
-                  {log.type}
-                </Tag>
-                <Text style={{ color: '#d4d4d4', wordBreak: 'break-all' }}>{log.message}</Text>
-              </div>
-            ))}
           </div>
         </>
       )}
