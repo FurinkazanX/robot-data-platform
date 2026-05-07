@@ -50,7 +50,7 @@ export default function Transfer() {
       listAllJobs().then(jobs => {
         const active = jobs.find(j => j.job_type === 'transfer' && j.status === 'running')
         if (active) {
-          setTransfer({ job: { jobId: active.job_id, progress: active, running: true } })
+          setTransfer({ job: { jobId: active.job_id, progress: active as Record<string, unknown>, running: true } })
           connectWs(active.job_id)
         }
       }).catch(() => {})

@@ -6,7 +6,7 @@ import {
 import { EyeOutlined } from '@ant-design/icons'
 import FileBrowser from '../components/FileBrowser'
 import {
-  getConverters, listFiles, previewFile, startConversion, startTransfer, testConnection,
+  getConverters, previewFile, startConversion, startTransfer, testConnection,
   type FileItem, type PreviewResult,
 } from '../api/client'
 
@@ -50,24 +50,6 @@ function ConvertForm({ onStarted }: { onStarted: () => void }) {
       })))
     } catch {
       message.error('字段解析失败')
-    }
-  }
-
-  const handleAutoDetect = async () => {
-    if (!dstDir) return message.warning('请先选择监控目录')
-    try {
-      const { items } = await listFiles(dstDir.path)
-      const hdf5 = items.find(f => !f.is_dir && (f.ext === '.hdf5' || f.ext === '.h5'))
-      if (!hdf5) return message.warning('目录中暂无 HDF5 文件')
-      const result = await previewFile(hdf5.path)
-      setPreview(result)
-      setMapping(result.fields.map(f => ({
-        hdf5_key: f.key, shape: f.shape.join('×'), dtype: f.dtype,
-        is_image: f.is_image, lerobot_field: result.suggested_mapping[f.key] ?? '',
-      })))
-      message.success(`已从 ${hdf5.name} 自动检测字段映射`)
-    } catch {
-      message.error('自动检测失败')
     }
   }
 

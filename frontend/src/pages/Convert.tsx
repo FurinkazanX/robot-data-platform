@@ -56,7 +56,7 @@ export default function Convert() {
       listAllJobs().then(jobs => {
         const active = jobs.find(j => j.job_type === 'convert' && j.status === 'running')
         if (active) {
-          setConvert({ job: { jobId: active.job_id, progress: active, running: true } })
+          setConvert({ job: { jobId: active.job_id, progress: active as Record<string, unknown>, running: true } })
           connectWs(active.job_id)
         }
       }).catch(() => {})
