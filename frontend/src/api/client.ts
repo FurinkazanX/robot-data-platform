@@ -124,11 +124,21 @@ export const editValue = (payload: {
 
 // ── Monitor ────────────────────────────────────────────────────────────────
 
+export interface QueueItem {
+  file_name: string
+  file_path: string
+  status: 'pending' | 'converting' | 'done' | 'failed'
+  percent: number
+  message: string
+  added_at: string
+}
+
 export interface MonitorStatus {
   state: 'idle' | 'monitoring'
   is_converting: boolean
   source_dir: string | null
   target_dir: string | null
+  queue: QueueItem[]
 }
 
 export const getMonitorStatus = () =>

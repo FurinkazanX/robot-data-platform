@@ -1,10 +1,7 @@
-"""Directory monitoring service for real-time data conversion.
-
-Watches a source directory for new HDF5 files and converts them to the
-target format as they arrive.
-"""
+"""Directory monitoring service for real-time data conversion."""
 import asyncio
 import threading
+from dataclasses import dataclass, field as dc_field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -16,6 +13,16 @@ from watchdog.events import FileSystemEventHandler
 class MonitorState:
     IDLE = "idle"
     MONITORING = "monitoring"
+
+
+@dataclass
+class ConversionItem:
+    file_path: str
+    file_name: str
+    status: str = "pending"   # pending | converting | done | failed
+    percent: float = 0.0
+    message: str = ""
+    added_at: str = dc_field(default_factory=lambda: datetime.now().isoformat())
 
 
 class MonitorService:
@@ -34,6 +41,7 @@ class MonitorService:
         self._pending_queue: Optional[asyncio.Queue] = None
         self._convert_task: Optional[asyncio.Task] = None
         self._lock = threading.Lock()
+        self._conversion_items: List[ConversionItem] = []
 
     # ── Public state ──────────────────────────────────────────────────────────
 
@@ -43,7 +51,21 @@ class MonitorService:
             "is_converting": self._is_converting,
             "source_dir": str(self._source_dir) if self._source_dir else None,
             "target_dir": str(self._target_dir) if self._target_dir else None,
+            "queue": self._queue_snapshot(),
         }
+
+    def _item_dict(self, item: ConversionItem) -> Dict[str, Any]:
+        return {
+            "file_name": item.file_name,
+            "file_path": item.file_path,
+            "status": item.status,
+            "percent": item.percent,
+            "message": item.message,
+            "added_at": item.added_at,
+        }
+
+    def _queue_snapshot(self) -> List[Dict[str, Any]]:
+        return [self._item_dict(it) for it in self._conversion_items]
 
     # ── Subscriber management ─────────────────────────────────────────────────
 
@@ -72,10 +94,29 @@ class MonitorService:
             except asyncio.QueueFull:
                 pass
 
-    def _emit_threadsafe(self, event: Dict[str, Any]):
-        """Safe to call from watchdog observer thread."""
-        if self._loop and not self._loop.is_closed():
-            self._loop.call_soon_threadsafe(self._emit, event)
+    def _emit_with_queue(self, event_type: str, message: str = ""):
+        """Emit an event containing the current queue snapshot. Must be on event loop thread."""
+        self._emit({
+            "type": event_type,
+            "message": message,
+            "state": self._state,
+            "is_converting": self._is_converting,
+            "queue": self._queue_snapshot(),
+        })
+
+    def _emit_with_queue_threadsafe(self, event_type: str, message: str = ""):
+        """Thread-safe version for calls from watchdog / executor threads."""
+        if not (self._loop and not self._loop.is_closed()):
+            return
+        # Snapshot is safe to take from any thread (GIL protects list reads)
+        snapshot = self._queue_snapshot()
+        self._loop.call_soon_threadsafe(self._emit, {
+            "type": event_type,
+            "message": message,
+            "state": self._state,
+            "is_converting": self._is_converting,
+            "queue": snapshot,
+        })
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -97,6 +138,7 @@ class MonitorService:
         self._target_format = target_format
         self._state = MonitorState.MONITORING
         self._logs = []
+        self._conversion_items = []
         self._loop = asyncio.get_running_loop()
         self._pending_queue = asyncio.Queue()
 
@@ -111,6 +153,7 @@ class MonitorService:
             "message": f"开始监控: {source_dir}  →  {target_dir}",
             "state": MonitorState.MONITORING,
             "is_converting": False,
+            "queue": [],
         })
 
     async def stop(self):
@@ -133,29 +176,21 @@ class MonitorService:
         self._convert_task = None
         self._pending_queue = None
         self._state = MonitorState.IDLE
-        self._emit({
-            "type": "info",
-            "message": "监控已停止",
-            "state": MonitorState.IDLE,
-            "is_converting": False,
-        })
+        self._emit_with_queue("info", "监控已停止")
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _enqueue_file(self, path: Path):
-        """Called from watchdog thread to enqueue a new file."""
+        """Called from watchdog thread."""
+        item = ConversionItem(file_path=str(path), file_name=path.name)
+        self._conversion_items.append(item)   # GIL-safe append
         if self._loop and self._pending_queue and not self._loop.is_closed():
             self._loop.call_soon_threadsafe(self._pending_queue.put_nowait, path)
-            self._emit_threadsafe({
-                "type": "detected",
-                "message": f"检测到新文件: {path.name}",
-                "state": self._state,
-                "is_converting": self._is_converting,
-            })
+        self._emit_with_queue_threadsafe("detected", f"检测到新文件: {path.name}")
 
     async def _convert_worker(self):
         from app.core.converter.base import get_converter
-        from app.core.converter import hdf5_lerobot  # noqa: F401 — triggers registration
+        from app.core.converter import hdf5_lerobot  # noqa: F401
 
         loop = asyncio.get_running_loop()
 
@@ -169,36 +204,33 @@ class MonitorService:
             except asyncio.CancelledError:
                 break
 
+            item = next(
+                (it for it in self._conversion_items if it.file_path == str(file_path)), None
+            )
+            if not item:
+                continue
+
+            item.status = "converting"
+            item.percent = 0.0
+            item.message = "准备中..."
             self._is_converting = True
-            self._emit({
-                "type": "converting",
-                "message": f"开始转换: {file_path.name}",
-                "state": self._state,
-                "is_converting": True,
-            })
+            self._emit_with_queue("converting", f"开始转换: {file_path.name}")
 
             try:
                 converter = get_converter(self._source_format, self._target_format)
 
-                # Auto-detect field mapping if none configured
                 mapping = self._field_mapping
                 if not mapping:
                     preview = await loop.run_in_executor(None, converter.preview, file_path)
                     mapping = preview.get("suggested_mapping", {})
-                    self._emit({
-                        "type": "info",
-                        "message": f"自动检测字段映射: {list(mapping.values())}",
-                        "state": self._state,
-                        "is_converting": True,
-                    })
+                    item.message = "自动检测字段映射"
+                    self._emit_with_queue("info", f"自动检测字段映射: {list(mapping.values())}")
 
                 def _progress_cb(done: int, total: int, msg: str):
-                    self._emit_threadsafe({
-                        "type": "progress",
-                        "message": msg,
-                        "state": MonitorState.MONITORING,
-                        "is_converting": True,
-                    })
+                    # Runs in executor thread — GIL protects attribute writes
+                    item.percent = round(done / total * 100, 1) if total else 0
+                    item.message = msg
+                    self._emit_with_queue_threadsafe("progress", msg)
 
                 dst = self._target_dir
                 fm = mapping
@@ -208,34 +240,29 @@ class MonitorService:
                         fp, d, m, True, _progress_cb
                     ),
                 )
-                self._emit({
-                    "type": "done",
-                    "message": f"转换完成: {file_path.name}",
-                    "state": self._state,
-                    "is_converting": False,
-                })
+
+                item.status = "done"
+                item.percent = 100.0
+                item.message = "转换完成"
+                self._is_converting = False
+                self._emit_with_queue("done", f"转换完成: {file_path.name}")
+
             except asyncio.CancelledError:
-                self._emit({
-                    "type": "warning",
-                    "message": f"转换被取消: {file_path.name}",
-                    "state": self._state,
-                    "is_converting": False,
-                })
+                item.status = "failed"
+                item.message = "已取消"
+                self._is_converting = False
+                self._emit_with_queue("warning", f"转换被取消: {file_path.name}")
                 break
             except Exception as exc:
-                self._emit({
-                    "type": "error",
-                    "message": f"转换失败 {file_path.name}: {exc}",
-                    "state": self._state,
-                    "is_converting": False,
-                })
+                item.status = "failed"
+                item.message = str(exc)
+                self._is_converting = False
+                self._emit_with_queue("error", f"转换失败 {file_path.name}: {exc}")
             finally:
                 self._is_converting = False
 
 
 class _HDF5EventHandler(FileSystemEventHandler):
-    """Watchdog event handler that detects new HDF5 files."""
-
     def __init__(self, service: MonitorService):
         self._service = service
         self._seen: set = set()
@@ -249,7 +276,6 @@ class _HDF5EventHandler(FileSystemEventHandler):
             self._service._enqueue_file(path)
 
     def on_moved(self, event):
-        # Some writers create a temp file then rename it
         if event.is_directory:
             return
         path = Path(event.dest_path)

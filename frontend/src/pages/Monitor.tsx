@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  Alert, Badge, Button, Col, Divider, Form, Row, Select,
+  Alert, Badge, Button, Col, Divider, Form, Progress, Row, Select,
   Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd'
 import {
-  EyeOutlined, PauseCircleOutlined, PlayCircleOutlined,
+  ClearOutlined, EyeOutlined, PauseCircleOutlined, PlayCircleOutlined,
 } from '@ant-design/icons'
 import FileBrowser from '../components/FileBrowser'
 import {
   getConverters, listFiles, previewFile,
   startMonitor, stopMonitor, getMonitorStatus,
-  type FileItem, type PreviewResult,
+  type FileItem, type PreviewResult, type QueueItem,
 } from '../api/client'
 
 const { Title, Text } = Typography
@@ -35,6 +35,18 @@ interface LogEntry {
   message: string
 }
 
+const STATUS_TAG: Record<string, { color: string; label: string }> = {
+  pending:    { color: 'default',    label: '排队中' },
+  converting: { color: 'processing', label: '转换中' },
+  done:       { color: 'success',    label: '已完成' },
+  failed:     { color: 'error',      label: '失败'   },
+}
+
+const LOG_TAG_COLOR: Record<string, string> = {
+  info: 'blue', done: 'green', error: 'red',
+  warning: 'orange', converting: 'processing', detected: 'purple',
+}
+
 export default function Monitor() {
   const [converters, setConverters] = useState<Array<{ key: string; name: string }>>([])
   const [selectedConverter, setSelectedConverter] = useState('hdf5->lerobot')
@@ -45,6 +57,7 @@ export default function Monitor() {
 
   const [state, setState] = useState<'idle' | 'monitoring'>('idle')
   const [isConverting, setIsConverting] = useState(false)
+  const [queue, setQueue] = useState<QueueItem[]>([])
   const [logs, setLogs] = useState<LogEntry[]>([])
 
   const wsRef = useRef<WebSocket | null>(null)
@@ -52,15 +65,14 @@ export default function Monitor() {
 
   useEffect(() => {
     getConverters().then(list => setConverters(list.map(c => ({ key: c.key, name: c.name }))))
-    // Sync state from server (e.g. after page refresh)
     getMonitorStatus().then(s => {
       setState(s.state as 'idle' | 'monitoring')
       setIsConverting(s.is_converting)
+      setQueue(s.queue ?? [])
       if (s.state === 'monitoring') connectWs()
     }).catch(() => {})
   }, [])
 
-  // Auto-scroll log to bottom
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [logs])
@@ -72,13 +84,17 @@ export default function Monitor() {
     ws.onmessage = e => {
       const data = JSON.parse(e.data)
       if (data.type === 'ping') return
-      setLogs(prev => [...prev, {
-        timestamp: data.timestamp ?? new Date().toISOString(),
-        type: data.type ?? 'info',
-        message: data.message ?? '',
-      }])
+      if (data.queue !== undefined) setQueue(data.queue)
       if (data.state !== undefined) setState(data.state)
       if (data.is_converting !== undefined) setIsConverting(data.is_converting)
+      // Only add non-progress events to the text log
+      if (data.type !== 'progress' && data.message) {
+        setLogs(prev => [...prev, {
+          timestamp: data.timestamp ?? new Date().toISOString(),
+          type: data.type ?? 'info',
+          message: data.message,
+        }])
+      }
     }
     ws.onclose = () => { wsRef.current = null }
     wsRef.current = ws
@@ -116,10 +132,8 @@ export default function Monitor() {
   const handleStart = async () => {
     if (!sourceDir) return message.warning('请选择监控目录')
     if (!targetDir) return message.warning('请选择目标目录')
-
     const field_mapping: Record<string, string> = {}
     mapping.forEach(r => { if (r.lerobot_field) field_mapping[r.hdf5_key] = r.lerobot_field })
-
     try {
       const [srcFmt, tgtFmt] = selectedConverter.split('->')
       await startMonitor({
@@ -130,6 +144,7 @@ export default function Monitor() {
         target_format: tgtFmt,
       })
       setLogs([])
+      setQueue([])
       setState('monitoring')
       connectWs()
       message.success('监控已启动')
@@ -152,6 +167,9 @@ export default function Monitor() {
     }
   }
 
+  const clearDone = () =>
+    setQueue(q => q.filter(it => it.status === 'pending' || it.status === 'converting'))
+
   const mappingCols = [
     { title: 'HDF5 字段', dataIndex: 'hdf5_key', width: 220 },
     { title: '形状', dataIndex: 'shape', width: 110 },
@@ -169,18 +187,13 @@ export default function Monitor() {
     },
   ]
 
-  const logTagColor: Record<string, string> = {
-    info: 'blue', done: 'green', error: 'red',
-    warning: 'orange', converting: 'processing', detected: 'purple', progress: 'default',
-  }
-
   const stopDisabled = isConverting || state === 'idle'
+  const doneCount = queue.filter(it => it.status === 'done' || it.status === 'failed').length
 
   return (
     <div>
       <Title level={4}>数据监控转换</Title>
 
-      {/* Status badge */}
       <div style={{ marginBottom: 16 }}>
         {state === 'monitoring' ? (
           <Badge status="processing" text={
@@ -193,7 +206,7 @@ export default function Monitor() {
         )}
       </div>
 
-      {/* Config section */}
+      {/* Config */}
       <Form layout="vertical">
         <Form.Item label="转换类型">
           <Select value={selectedConverter} onChange={setSelectedConverter} style={{ width: 240 }}
@@ -204,35 +217,23 @@ export default function Monitor() {
 
       <Row gutter={24}>
         <Col span={12}>
-          <FileBrowser
-            title="监控目录（源数据）"
-            dirOnly
-            fileOps
+          <FileBrowser title="监控目录（源数据）" dirOnly fileOps
             onSelect={(_, items) => setSourceDir(items[0] ?? null)}
-            disabled={state === 'monitoring'}
-          />
+            disabled={state === 'monitoring'} />
           {sourceDir && (
             <Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 12 }}>
               已选: {sourceDir.path}
             </Text>
           )}
-          <Button
-            icon={<EyeOutlined />}
-            style={{ marginTop: 8 }}
-            onClick={handlePreviewDir}
-            disabled={!sourceDir || state === 'monitoring'}
-          >
+          <Button icon={<EyeOutlined />} style={{ marginTop: 8 }} onClick={handlePreviewDir}
+            disabled={!sourceDir || state === 'monitoring'}>
             自动检测字段映射
           </Button>
         </Col>
         <Col span={12}>
-          <FileBrowser
-            title="目标目录（输出数据集）"
-            dirOnly
-            fileOps
+          <FileBrowser title="目标目录（输出数据集）" dirOnly fileOps
             onSelect={(_, items) => setTargetDir(items[0] ?? null)}
-            disabled={state === 'monitoring'}
-          />
+            disabled={state === 'monitoring'} />
           {targetDir && (
             <Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 12 }}>
               已选: {targetDir.path}
@@ -243,78 +244,100 @@ export default function Monitor() {
 
       {preview && mapping.length > 0 && (
         <>
-          <Divider>字段映射配置（来自样本文件，共 {preview.n_frames} 帧）</Divider>
-          <Table
-            dataSource={mapping}
-            columns={mappingCols}
-            rowKey="hdf5_key"
-            size="small"
-            pagination={false}
-          />
-          <Alert
-            type="info"
-            showIcon
-            message="此映射将用于所有新检测到的文件。若目录中暂无文件，将在首个文件到达时自动检测。"
-            style={{ marginTop: 8 }}
-          />
+          <Divider>字段映射配置（共 {preview.n_frames} 帧）</Divider>
+          <Table dataSource={mapping} columns={mappingCols} rowKey="hdf5_key" size="small" pagination={false} />
+          <Alert type="info" showIcon style={{ marginTop: 8 }}
+            message="此映射将用于所有新检测到的文件。若目录暂无文件，将在首个文件到达时自动检测。" />
         </>
       )}
 
       {!preview && (
-        <Alert
-          type="info"
-          showIcon
-          message="未配置字段映射 — 系统将在每个新文件到达时自动推断字段映射。建议提前选择样本文件进行配置以确保准确性。"
-          style={{ marginTop: 16 }}
-        />
+        <Alert type="info" showIcon style={{ marginTop: 16 }}
+          message="未配置字段映射 — 系统将在每个新文件到达时自动推断字段映射。建议提前选择样本文件进行配置以确保准确性。" />
       )}
 
-      {/* Control buttons */}
+      {/* Controls */}
       <Divider />
       <Space>
-        <Button
-          type="primary"
-          icon={<PlayCircleOutlined />}
-          onClick={handleStart}
-          disabled={state === 'monitoring' || !sourceDir || !targetDir}
-        >
+        <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleStart}
+          disabled={state === 'monitoring' || !sourceDir || !targetDir}>
           开始监控
         </Button>
-
-        <Tooltip
-          title={isConverting ? '正在转换数据，转换完成后才能停止监控' : ''}
-          open={isConverting ? undefined : false}
-        >
-          <Button
-            danger
-            icon={<PauseCircleOutlined />}
-            onClick={handleStop}
-            disabled={stopDisabled}
-          >
+        <Tooltip title={isConverting ? '正在转换数据，转换完成后才能停止监控' : ''}
+          open={isConverting ? undefined : false}>
+          <Button danger icon={<PauseCircleOutlined />} onClick={handleStop} disabled={stopDisabled}>
             停止监控
           </Button>
         </Tooltip>
       </Space>
 
-      {/* Event log */}
+      {/* Conversion queue */}
+      {queue.length > 0 && (
+        <>
+          <Divider>
+            <Space>
+              转换队列（{queue.filter(it => it.status === 'converting').length} 转换中 ·{' '}
+              {queue.filter(it => it.status === 'pending').length} 排队 ·{' '}
+              {queue.filter(it => it.status === 'done').length} 完成 ·{' '}
+              {queue.filter(it => it.status === 'failed').length} 失败）
+              {doneCount > 0 && (
+                <Button size="small" icon={<ClearOutlined />} onClick={clearDone}>
+                  清除已完成
+                </Button>
+              )}
+            </Space>
+          </Divider>
+          <div style={{ maxHeight: 360, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {queue.map((item, i) => {
+              const tag = STATUS_TAG[item.status] ?? { color: 'default', label: item.status }
+              const progressStatus =
+                item.status === 'failed' ? 'exception' :
+                item.status === 'done'   ? 'success'   : 'active'
+              return (
+                <div key={i} style={{
+                  padding: '10px 14px',
+                  background: '#fafafa',
+                  border: '1px solid #f0f0f0',
+                  borderRadius: 6,
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <Text strong style={{ fontSize: 13, maxWidth: '80%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {item.file_name}
+                    </Text>
+                    <Tag color={tag.color} style={{ margin: 0 }}>{tag.label}</Tag>
+                  </div>
+                  <Progress
+                    percent={Math.round(item.percent)}
+                    size="small"
+                    status={progressStatus}
+                    strokeColor={item.status === 'converting' ? undefined : undefined}
+                  />
+                  {item.message && (
+                    <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 2 }}>
+                      {item.message}
+                    </Text>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
+
+      {/* System log */}
       {logs.length > 0 && (
         <>
-          <Divider>实时日志</Divider>
+          <Divider>系统日志</Divider>
           <div style={{
-            background: '#141414',
-            borderRadius: 6,
-            padding: '12px 16px',
-            maxHeight: 340,
-            overflowY: 'auto',
-            fontFamily: 'monospace',
-            fontSize: 12,
+            background: '#141414', borderRadius: 6, padding: '12px 16px',
+            maxHeight: 200, overflowY: 'auto', fontFamily: 'monospace', fontSize: 12,
           }}>
             {logs.map((log, i) => (
               <div key={i} style={{ marginBottom: 4, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                 <Text style={{ color: '#666', whiteSpace: 'nowrap', fontSize: 11 }}>
                   {log.timestamp.replace('T', ' ').slice(0, 19)}
                 </Text>
-                <Tag color={logTagColor[log.type] ?? 'default'} style={{ margin: 0, flexShrink: 0 }}>
+                <Tag color={LOG_TAG_COLOR[log.type] ?? 'default'} style={{ margin: 0, flexShrink: 0 }}>
                   {log.type}
                 </Tag>
                 <Text style={{ color: '#d4d4d4', wordBreak: 'break-all' }}>{log.message}</Text>
