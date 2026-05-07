@@ -85,16 +85,22 @@ export default function FileBrowser({ onSelect, checkable = false, filterExt, di
     }
   }
 
-  // single-click mode (non-checkable)
-  const handleSelect = (_: string[], info: { selectedNodes: EventDataNode<DataNode>[] }) => {
+  const selectByKey = (key: string) => {
+    const item = findItem(treeData, key)
+    if (!item) return
+    setSelectedKeys([key])
+    onSelect?.([key], [item])
+  }
+
+  // single-click mode (non-checkable): use node.key + findItem to avoid
+  // Ant Design Tree stripping custom props from selectedNodes
+  const handleSelect = (_: string[], info: { selected: boolean; node: EventDataNode<DataNode> }) => {
     if (checkable) return
-    const nodes = info.selectedNodes as unknown as LoadedNode[]
-    if (!nodes.length) return
-    const node = nodes[0]
-    setSelectedKeys([node.key as string])
-    if (onSelect) {
-      onSelect([node.key as string], [node.item])
+    if (!info.selected) {
+      setSelectedKeys([])
+      return
     }
+    selectByKey(info.node.key as string)
   }
 
   return (
@@ -115,8 +121,19 @@ export default function FileBrowser({ onSelect, checkable = false, filterExt, di
           onSelect={handleSelect as never}
           titleRender={node => {
             const n = node as unknown as LoadedNode
+            const isSelected = selectedKeys.includes(n.key as string)
             return (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <span
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 5,
+                  background: isSelected && dirOnly ? '#e6f4ff' : 'transparent',
+                  borderRadius: 4, padding: '0 4px', cursor: 'pointer',
+                }}
+                onClick={dirOnly && n.item?.is_dir ? (e) => {
+                  e.stopPropagation()
+                  selectByKey(n.key as string)
+                } : undefined}
+              >
                 {n.item?.is_dir
                   ? <FolderOutlined style={{ color: '#faad14', flexShrink: 0 }} />
                   : <FileOutlined style={{ flexShrink: 0 }} />}

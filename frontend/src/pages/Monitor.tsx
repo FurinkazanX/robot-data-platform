@@ -210,6 +210,11 @@ export default function Monitor() {
             onSelect={(_, items) => setSourceDir(items[0] ?? null)}
             disabled={state === 'monitoring'}
           />
+          {sourceDir && (
+            <Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 12 }}>
+              已选: {sourceDir.path}
+            </Text>
+          )}
           <Button
             icon={<EyeOutlined />}
             style={{ marginTop: 8 }}
