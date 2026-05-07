@@ -18,6 +18,15 @@ export interface FileItem {
 export const listFiles = (path?: string) =>
   api.get<{ path: string; items: FileItem[] }>('/files/list', { params: { path } }).then(r => r.data)
 
+export const localMkdir = (path: string) =>
+  api.post('/files/mkdir', { path }).then(r => r.data)
+
+export const localRename = (path: string, new_name: string) =>
+  api.post('/files/rename', { path, new_name }).then(r => r.data)
+
+export const localDelete = (path: string) =>
+  api.post('/files/delete', { path }).then(r => r.data)
+
 // ── Convert ────────────────────────────────────────────────────────────────
 
 export interface HDF5Field {

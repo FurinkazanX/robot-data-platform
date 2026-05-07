@@ -207,6 +207,7 @@ export default function Monitor() {
           <FileBrowser
             title="监控目录（源数据）"
             dirOnly
+            fileOps
             onSelect={(_, items) => setSourceDir(items[0] ?? null)}
             disabled={state === 'monitoring'}
           />
@@ -228,6 +229,7 @@ export default function Monitor() {
           <FileBrowser
             title="目标目录（输出数据集）"
             dirOnly
+            fileOps
             onSelect={(_, items) => setTargetDir(items[0] ?? null)}
             disabled={state === 'monitoring'}
           />
