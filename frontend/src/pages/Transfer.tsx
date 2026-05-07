@@ -12,7 +12,7 @@ import { Tree } from 'antd'
 import type { DataNode } from 'antd/es/tree'
 import FileBrowser from '../components/FileBrowser'
 import {
-  testConnection, listRemote, startTransfer, cancelTransfer,
+  testConnection, listRemote, startTransfer, cancelTransfer, listAllJobs,
   remoteMkdir, remoteRename, remoteDelete,
   type SSHCreds,
 } from '../api/client'
@@ -44,6 +44,16 @@ export default function Transfer() {
   useEffect(() => {
     if (jobId && running && !wsRef.current) {
       connectWs(jobId)
+      return
+    }
+    if (!jobId) {
+      listAllJobs().then(jobs => {
+        const active = jobs.find(j => j.job_type === 'transfer' && j.status === 'running')
+        if (active) {
+          setTransfer({ job: { jobId: active.job_id, progress: active, running: true } })
+          connectWs(active.job_id)
+        }
+      }).catch(() => {})
     }
   }, [])
 

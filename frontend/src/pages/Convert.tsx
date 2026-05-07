@@ -6,7 +6,7 @@ import {
 import { InfoCircleOutlined, StopOutlined } from '@ant-design/icons'
 import FileBrowser from '../components/FileBrowser'
 import {
-  getConverters, previewFile, startConversion, cancelConversion,
+  getConverters, previewFile, startConversion, cancelConversion, listAllJobs,
   type PreviewResult, type FileItem,
 } from '../api/client'
 import { useAppContext } from '../context/AppContext'
@@ -46,10 +46,20 @@ export default function Convert() {
     getConverters().then(list => setConverters(list.map(c => ({ key: c.key, name: c.name }))))
   }, [])
 
-  // Reconnect WS if there's an active job on mount (e.g. page revisit)
+  // Reconnect WS if there's an active job on mount (e.g. page revisit or refresh)
   useEffect(() => {
     if (jobId && running && !wsRef.current) {
       connectWs(jobId)
+      return
+    }
+    if (!jobId) {
+      listAllJobs().then(jobs => {
+        const active = jobs.find(j => j.job_type === 'convert' && j.status === 'running')
+        if (active) {
+          setConvert({ job: { jobId: active.job_id, progress: active, running: true } })
+          connectWs(active.job_id)
+        }
+      }).catch(() => {})
     }
   }, [])
 

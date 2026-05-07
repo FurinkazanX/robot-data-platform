@@ -108,7 +108,7 @@ async def start_transfer(req: TransferRequest):
     if not req.local_paths:
         raise HTTPException(status_code=400, detail="请至少选择一个本地文件")
 
-    job = job_manager.create()
+    job = job_manager.create(job_type="transfer")
     job.update(total=len(req.local_paths), status=JobStatus.RUNNING, message="连接中...")
 
     async def _run():

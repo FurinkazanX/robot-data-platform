@@ -1,19 +1,24 @@
 import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-dom'
 import { Layout, Menu } from 'antd'
-import { SwapOutlined, CloudUploadOutlined, PlayCircleOutlined, EyeOutlined } from '@ant-design/icons'
+import {
+  SwapOutlined, CloudUploadOutlined, PlayCircleOutlined,
+  EyeOutlined, UnorderedListOutlined,
+} from '@ant-design/icons'
 import Convert from './pages/Convert'
 import Transfer from './pages/Transfer'
 import Visualize from './pages/Visualize'
 import Monitor from './pages/Monitor'
+import Tasks from './pages/Tasks'
 import { AppProvider } from './context/AppContext'
 
 const { Header, Content, Sider } = Layout
 
 const NAV = [
-  { key: '/convert', icon: <SwapOutlined />, label: <Link to="/convert">数据转换</Link> },
-  { key: '/transfer', icon: <CloudUploadOutlined />, label: <Link to="/transfer">文件传输</Link> },
-  { key: '/visualize', icon: <PlayCircleOutlined />, label: <Link to="/visualize">数据可视化</Link> },
-  { key: '/monitor', icon: <EyeOutlined />, label: <Link to="/monitor">数据监控</Link> },
+  { key: '/convert',  icon: <SwapOutlined />,          label: <Link to="/convert">数据转换</Link> },
+  { key: '/transfer', icon: <CloudUploadOutlined />,    label: <Link to="/transfer">文件传输</Link> },
+  { key: '/visualize',icon: <PlayCircleOutlined />,     label: <Link to="/visualize">数据可视化</Link> },
+  { key: '/monitor',  icon: <EyeOutlined />,            label: <Link to="/monitor">数据监控</Link> },
+  { key: '/tasks',    icon: <UnorderedListOutlined />,  label: <Link to="/tasks">任务管理</Link> },
 ]
 
 function AppLayout() {
@@ -42,6 +47,7 @@ function AppLayout() {
               <Route path="/transfer" element={<Transfer />} />
               <Route path="/visualize" element={<Visualize />} />
               <Route path="/monitor" element={<Monitor />} />
+              <Route path="/tasks" element={<Tasks />} />
             </Routes>
           </Content>
         </Layout>

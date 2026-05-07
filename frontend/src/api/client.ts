@@ -92,6 +92,28 @@ export const startTransfer = (payload: SSHCreds & { local_paths: string[]; remot
 export const cancelTransfer = (jobId: string) =>
   api.post(`/transfer/cancel/${jobId}`).then(r => r.data)
 
+// ── Jobs (unified) ─────────────────────────────────────────────────────────
+
+export interface JobInfo {
+  job_id: string
+  job_type: string   // 'convert' | 'transfer'
+  status: string     // 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
+  total: number
+  current: number
+  percent: number
+  current_file: string
+  message: string
+  error: string
+  created_at: string
+  updated_at: string
+}
+
+export const listAllJobs = () =>
+  api.get<JobInfo[]>('/jobs').then(r => r.data)
+
+export const dismissJob = (jobId: string) =>
+  api.post(`/jobs/${jobId}/dismiss`).then(r => r.data)
+
 // ── Visualize ──────────────────────────────────────────────────────────────
 
 export interface DatasetInfo {

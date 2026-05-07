@@ -12,11 +12,13 @@ class JobStatus(str, Enum):
     DONE = "done"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    DISMISSED = "dismissed"
 
 
 @dataclass
 class JobProgress:
     job_id: str
+    job_type: str = ""          # "convert" | "transfer"
     status: JobStatus = JobStatus.PENDING
     total: int = 0
     current: int = 0
@@ -35,6 +37,7 @@ class JobProgress:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "job_id": self.job_id,
+            "job_type": self.job_type,
             "status": self.status,
             "total": self.total,
             "current": self.current,
@@ -57,8 +60,6 @@ class JobProgress:
             q.put_nowait(event)
 
     def subscribe(self) -> asyncio.Queue:
-        """Subscribe to updates. History is replayed immediately so late subscribers
-        receive all past events, including the final done/failed status."""
         q: asyncio.Queue = asyncio.Queue()
         for event in self._history:
             q.put_nowait(event)
@@ -74,9 +75,9 @@ class JobManager:
     def __init__(self):
         self._jobs: Dict[str, JobProgress] = {}
 
-    def create(self) -> JobProgress:
+    def create(self, job_type: str = "") -> JobProgress:
         job_id = str(uuid.uuid4())
-        job = JobProgress(job_id=job_id)
+        job = JobProgress(job_id=job_id, job_type=job_type)
         self._jobs[job_id] = job
         return job
 
@@ -84,7 +85,12 @@ class JobManager:
         return self._jobs.get(job_id)
 
     def list_all(self) -> List[Dict[str, Any]]:
-        return [j.to_dict() for j in self._jobs.values()]
+        return sorted(
+            [j.to_dict() for j in self._jobs.values()
+             if j.status != JobStatus.DISMISSED],
+            key=lambda d: d["created_at"],
+            reverse=True,
+        )
 
 
 job_manager = JobManager()

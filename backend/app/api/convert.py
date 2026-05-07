@@ -61,7 +61,7 @@ async def start_conversion(req: ConvertRequest):
     if not req.dst_path.strip():
         raise HTTPException(status_code=400, detail="请填写目标路径")
 
-    job = job_manager.create()
+    job = job_manager.create(job_type="convert")
     job.update(total=len(req.src_paths), status=JobStatus.RUNNING, message="启动中...")
 
     async def _run():
