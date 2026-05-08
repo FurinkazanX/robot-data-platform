@@ -508,6 +508,10 @@ export default function Monitor() {
                   const children = await refreshRemote(key as string)
                   setMonitorSSH({ remoteNodes: updateNodes(remoteNodes as RemoteNode[], key as string, children) })
                 }}
+                onSelect={(_, info) => {
+                  const n = info.node as unknown as RemoteNode
+                  if (n.isRemoteDir) setMonitorSSH({ remoteBase: n.remotePath })
+                }}
                 titleRender={node => {
                   const n = node as unknown as RemoteNode
                   return (

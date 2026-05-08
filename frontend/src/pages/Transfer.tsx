@@ -276,6 +276,10 @@ function TransferModal({
                   const children = await refreshRemote(key as string)
                   setTransfer({ remoteNodes: updateNodes(remoteNodes as RemoteNode[], key as string, children) })
                 }}
+                onSelect={(_, info) => {
+                  const n = info.node as unknown as RemoteNode
+                  if (n.isRemoteDir) setTransfer({ remoteBase: n.remotePath })
+                }}
                 titleRender={node => {
                   const n = node as unknown as RemoteNode
                   return (
