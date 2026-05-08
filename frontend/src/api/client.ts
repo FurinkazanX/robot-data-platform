@@ -155,7 +155,7 @@ export const editValue = (payload: {
 export interface QueueItem {
   file_name: string
   file_path: string
-  status: 'pending' | 'waiting' | 'converting' | 'done' | 'failed'
+  status: 'pending' | 'waiting' | 'converting' | 'transferring' | 'done' | 'failed'
   percent: number
   message: string
   added_at: string
@@ -163,9 +163,12 @@ export interface QueueItem {
 
 export interface MonitorStatus {
   state: 'idle' | 'monitoring'
+  mode: 'convert' | 'transfer'
   is_converting: boolean
   source_dir: string | null
   target_dir: string | null
+  remote_host: string | null
+  remote_target_dir: string | null
   queue: QueueItem[]
 }
 
@@ -173,11 +176,19 @@ export const getMonitorStatus = () =>
   api.get<MonitorStatus>('/monitor/status').then(r => r.data)
 
 export const startMonitor = (payload: {
+  mode?: 'convert' | 'transfer'
   source_dir: string
-  target_dir: string
-  field_mapping: Record<string, string>
+  // convert mode
+  target_dir?: string
+  field_mapping?: Record<string, string>
   source_format?: string
   target_format?: string
+  // transfer mode
+  host?: string
+  port?: number
+  username?: string
+  password?: string
+  remote_target_dir?: string
 }) => api.post<{ ok: boolean; message: string }>('/monitor/start', payload).then(r => r.data)
 
 export const stopMonitor = () =>
