@@ -81,6 +81,7 @@ export default function Monitor() {
   }>({})
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const fetchingRef = useRef(false)
 
   const patchCreds = (p: Partial<typeof creds>) =>
     setMonitorSSH({ creds: { ...creds, ...p } })
@@ -204,6 +205,8 @@ export default function Monitor() {
   // ── Monitor status polling ────────────────────────────────────────────────
 
   const fetchStatus = async () => {
+    if (fetchingRef.current) return
+    fetchingRef.current = true
     try {
       const s = await getMonitorStatus()
       setMonitorState(s.state)
@@ -216,7 +219,9 @@ export default function Monitor() {
         remoteHost: s.remote_host ?? undefined,
         remoteTarget: s.remote_target_dir ?? undefined,
       })
-    } catch {}
+    } catch {} finally {
+      fetchingRef.current = false
+    }
   }
 
   useEffect(() => {

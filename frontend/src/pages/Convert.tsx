@@ -173,12 +173,17 @@ export default function Convert() {
   const [newTaskOpen, setNewTaskOpen] = useState(false)
   const [dismissing, setDismissing] = useState<string | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const fetchingRef = useRef(false)
 
   const fetchJobs = async () => {
+    if (fetchingRef.current) return
+    fetchingRef.current = true
     try {
       const all = await listAllJobs()
       setJobs(all.filter(j => j.job_type === 'convert'))
-    } catch {}
+    } catch {} finally {
+      fetchingRef.current = false
+    }
   }
 
   useEffect(() => {
