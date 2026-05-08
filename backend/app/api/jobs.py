@@ -5,7 +5,7 @@ from app.jobs import JobStatus, job_manager
 router = APIRouter()
 
 
-@router.get("/")
+@router.get("")
 def list_jobs():
     return job_manager.list_all()
 
@@ -16,5 +16,4 @@ def dismiss_job(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     job.update(status=JobStatus.DISMISSED)
-    job_manager.persist()
     return {"ok": True}
