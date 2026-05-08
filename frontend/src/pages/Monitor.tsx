@@ -58,7 +58,7 @@ export default function Monitor() {
       setMonitorState(s.state as 'idle' | 'monitoring')
       setIsConverting(s.is_converting)
       setQueue(s.queue ?? [])
-      setRunningDirs({ source: s.source_dir, target: s.target_dir })
+      setRunningDirs({ source: s.source_dir ?? undefined, target: s.target_dir ?? undefined })
     } catch {}
   }
 
