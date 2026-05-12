@@ -193,3 +193,26 @@ export const startMonitor = (payload: {
 
 export const stopMonitor = () =>
   api.post<{ ok: boolean; message: string }>('/monitor/stop').then(r => r.data)
+
+// ── Annotate ───────────────────────────────────────────────────────────────
+
+export interface AnnotationData {
+  version: number
+  episodes: Record<string, {
+    labels?: string[]
+    frame_rewards?: Record<string, number>
+  }>
+}
+
+export const loadAnnotations = (path: string) =>
+  api.get<AnnotationData>('/annotate/load', { params: { path } }).then(r => r.data)
+
+export const saveAnnotations = (payload: {
+  path: string
+  episode: number
+  labels: string[]
+  frame_rewards: Record<string, number>
+}) => api.post<{ ok: boolean }>('/annotate/save', payload).then(r => r.data)
+
+export const getAnnotationLabels = () =>
+  api.get<{ suggestions: string[] }>('/annotate/labels').then(r => r.data)

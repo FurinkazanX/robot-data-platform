@@ -26,8 +26,6 @@ import pyarrow.parquet as pq
 
 from .base import BaseConverter, register_converter
 
-_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
-
 
 def _is_image_dataset(ds: h5py.Dataset) -> bool:
     """Shape (T, H, W) or (T, H, W, C) with uint8."""

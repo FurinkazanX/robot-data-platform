@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   AutoComplete, Button, Col, Divider, Form, Input, InputNumber,
   Modal, Row, Select, Switch, Table, Tabs, Tag, Typography, message,
@@ -34,9 +34,9 @@ function ConvertForm({ onStarted }: { onStarted: () => void }) {
   const [mapping, setMapping] = useState<MappingRow[]>([])
   const [submitting, setSubmitting] = useState(false)
 
-  useState(() => {
+  useEffect(() => {
     getConverters().then(list => setConverters(list.map(c => ({ key: c.key, name: c.name }))))
-  })
+  }, [])
 
   const handlePreview = async () => {
     const first = srcFiles.find(f => !f.is_dir)

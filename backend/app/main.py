@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import files, convert, transfer, visualize, monitor
+from app.api import files, convert, transfer, visualize, monitor, annotate
 from app.api import jobs as jobs_api
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "static")
@@ -31,6 +31,7 @@ app.include_router(convert.router, prefix="/api/convert", tags=["convert"])
 app.include_router(transfer.router, prefix="/api/transfer", tags=["transfer"])
 app.include_router(visualize.router, prefix="/api/visualize", tags=["visualize"])
 app.include_router(monitor.router, prefix="/api/monitor", tags=["monitor"])
+app.include_router(annotate.router, prefix="/api/annotate", tags=["annotate"])
 app.include_router(jobs_api.router, prefix="/api/jobs", tags=["jobs"])
 
 # Serve Vite-built hashed assets (JS / CSS / images)

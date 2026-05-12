@@ -331,7 +331,7 @@ export default function Monitor() {
   }
 
   const clearDone = () =>
-    setQueue(q => q.filter(it => it.status === 'pending' || it.status === 'converting' || it.status === 'transferring'))
+    setQueue(q => q.filter(it => ['pending', 'waiting', 'converting', 'transferring'].includes(it.status)))
 
   // ── Derived ───────────────────────────────────────────────────────────────
 

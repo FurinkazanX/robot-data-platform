@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Button, Col, Divider, Form, InputNumber, Row, Select,
+  Button, Col, Divider, Form, InputNumber, Radio, Row, Select,
   Slider, Space, Table, Tag, Typography, message,
 } from 'antd'
 import {
@@ -24,6 +24,7 @@ interface CameraEntry {
 }
 
 export default function Visualize() {
+  const [vizFormat, setVizFormat] = useState<'hdf5' | 'lerobot'>('hdf5')
   const [selectedFile, setSelectedFile] = useState<FileItem | null>(null)
   const [info, setInfo] = useState<DatasetInfo | null>(null)
   const [episode, setEpisode] = useState(0)
@@ -34,7 +35,6 @@ export default function Visualize() {
   const [series, setSeries] = useState<Record<string, number[]>>({})
   const [visibleFields, setVisibleFields] = useState<string[]>([])
   const [editingRow, setEditingRow] = useState<{ field: string; value: unknown } | null>(null)
-  // Track image load errors per camera to show fallback
   const [imgErrors, setImgErrors] = useState<Record<string, boolean>>({})
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -49,7 +49,6 @@ export default function Visualize() {
           label: f.key.split('/').filter(Boolean).pop() ?? f.key,
         }))
     }
-    // lerobot: cameras are directory names under videos/
     return (info.cameras ?? []).map(c => ({ id: c, label: c }))
   }, [info])
 
@@ -70,6 +69,14 @@ export default function Visualize() {
       message.error('无法读取数据集信息')
     }
   }, [])
+
+  const handleEpisodeChange = (ep: number) => {
+    setEpisode(ep)
+    setFrameIdx(0)
+    setImgErrors({})
+    const epLen = info?.episodes?.find(e => e.episode_index === ep)?.length ?? info?.n_frames ?? 0
+    setTotalFrames(epLen)
+  }
 
   // Load series data when episode changes
   useEffect(() => {
@@ -148,19 +155,45 @@ export default function Visualize() {
     },
   ]
 
-  // Determine grid columns based on camera count
   const camCols = cameraList.length <= 1 ? 1 : cameraList.length <= 4 ? 2 : 3
 
   return (
     <div>
       <Title level={4}>数据可视化</Title>
+
+      {/* Format selector */}
+      <Form layout="inline" style={{ marginBottom: 16 }}>
+        <Form.Item label="数据格式">
+          <Radio.Group
+            value={vizFormat}
+            onChange={e => {
+              setVizFormat(e.target.value)
+              setSelectedFile(null)
+              setInfo(null)
+              setSeries({})
+            }}
+          >
+            <Radio.Button value="hdf5">HDF5</Radio.Button>
+            <Radio.Button value="lerobot">LeRobot</Radio.Button>
+          </Radio.Group>
+        </Form.Item>
+      </Form>
+
       <Row gutter={24}>
         <Col span={6}>
-          <FileBrowser
-            title="选择数据集"
-            onSelect={handleFileSelect}
-            filterExt={['.h5', '.hdf5']}
-          />
+          {vizFormat === 'hdf5' ? (
+            <FileBrowser
+              title="选择 HDF5 文件"
+              onSelect={handleFileSelect}
+              filterExt={['.h5', '.hdf5']}
+            />
+          ) : (
+            <FileBrowser
+              title="选择 LeRobot 目录"
+              dirOnly
+              onSelect={handleFileSelect}
+            />
+          )}
           {info && (
             <div style={{ marginTop: 12 }}>
               <Tag color="blue">{info.format.toUpperCase()}</Tag>
@@ -173,7 +206,7 @@ export default function Visualize() {
             <Form.Item label="Episode" style={{ marginTop: 8 }}>
               <Select
                 value={episode}
-                onChange={ep => { setEpisode(ep); setFrameIdx(0) }}
+                onChange={handleEpisodeChange}
                 options={(info.episodes ?? Array.from({ length: info.n_episodes }, (_, i) => ({ episode_index: i, length: 0 }))).map(e => ({
                   label: `Episode ${e.episode_index} (${e.length}帧)`,
                   value: e.episode_index,
@@ -186,7 +219,7 @@ export default function Visualize() {
 
         <Col span={18}>
           {!selectedFile ? (
-            <div style={{ padding: 40, textAlign: 'center', color: '#999' }}>请在左侧选择数据集文件</div>
+            <div style={{ padding: 40, textAlign: 'center', color: '#999' }}>请在左侧选择数据集</div>
           ) : (
             <>
               {/* Camera images grid */}

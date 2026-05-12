@@ -34,6 +34,29 @@ def _detect_format(path: Path) -> str:
     return "unknown"
 
 
+def _find_videos_dir(p: Path) -> Optional[Path]:
+    # Converter output: data/chunk-000/videos/<cam>/
+    d1 = p / "data" / "chunk-000" / "videos"
+    if d1.exists():
+        return d1
+    # Native LeRobot format: videos/chunk-000/<cam>/
+    d2 = p / "videos" / "chunk-000"
+    if d2.exists():
+        return d2
+    return None
+
+
+def _find_ep_parquet(p: Path, episode: int) -> Optional[Path]:
+    ep_name = f"episode_{episode:06d}.parquet"
+    f1 = p / "data" / "chunk-000" / ep_name
+    if f1.exists():
+        return f1
+    f2 = p / "data" / "chunk-000" / "episodes" / ep_name
+    if f2.exists():
+        return f2
+    return None
+
+
 # ── Info ──────────────────────────────────────────────────────────────────────
 
 @router.get("/info")
@@ -86,9 +109,9 @@ def _lerobot_info(p: Path, path_str: str) -> Dict[str, Any]:
                     episodes.append(json.loads(line))
 
     # Enumerate camera directories for frame access
-    videos_dir = p / "data" / "chunk-000" / "videos"
+    videos_dir = _find_videos_dir(p)
     cameras: List[str] = []
-    if videos_dir.exists():
+    if videos_dir and videos_dir.exists():
         cameras = sorted(d.name for d in videos_dir.iterdir() if d.is_dir())
 
     return {
@@ -146,9 +169,8 @@ def _hdf5_frame(p: Path, frame_idx: int, cam: Optional[str]) -> Image.Image:
 
 
 def _lerobot_frame(p: Path, episode: int, frame_idx: int, cam: Optional[str]) -> Image.Image:
-    # Try to extract from MP4
-    videos_dir = p / "data" / "chunk-000" / "videos"
-    if not videos_dir.exists():
+    videos_dir = _find_videos_dir(p)
+    if not videos_dir:
         raise HTTPException(status_code=404, detail="No video data found")
 
     cam_dirs = list(videos_dir.iterdir())
@@ -208,8 +230,8 @@ def _hdf5_series(p: Path, field: Optional[str]) -> Dict[str, Any]:
 
 
 def _lerobot_series(p: Path, episode: int, field: Optional[str]) -> Dict[str, Any]:
-    ep_file = p / "data" / "chunk-000" / f"episode_{episode:06d}.parquet"
-    if not ep_file.exists():
+    ep_file = _find_ep_parquet(p, episode)
+    if not ep_file:
         raise HTTPException(status_code=404, detail="Episode not found")
     df = pq.read_table(ep_file).to_pandas()
     results = {}
@@ -217,6 +239,8 @@ def _lerobot_series(p: Path, episode: int, field: Optional[str]) -> Dict[str, An
         if field and col != field:
             continue
         vals = df[col].tolist()
+        if not vals:
+            continue
         if isinstance(vals[0], (int, float)):
             results[col] = vals
         elif isinstance(vals[0], list):
@@ -257,8 +281,8 @@ def _hdf5_edit(p: Path, frame_idx: int, field: str, value: Any):
 
 
 def _lerobot_edit(p: Path, episode: int, frame_idx: int, field: str, value: Any):
-    ep_file = p / "data" / "chunk-000" / f"episode_{episode:06d}.parquet"
-    if not ep_file.exists():
+    ep_file = _find_ep_parquet(p, episode)
+    if not ep_file:
         raise HTTPException(status_code=404, detail="Episode not found")
     df = pq.read_table(ep_file).to_pandas()
     if field not in df.columns:
