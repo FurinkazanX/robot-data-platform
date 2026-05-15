@@ -100,6 +100,12 @@ export default function Visualize() {
     return (info.cameras ?? []).map(c => ({ id: c, label: c }))
   }, [info])
 
+  const episodeItems = useMemo((): Array<{ episode_index: number; length: number }> => {
+    if (!info || info.format !== 'lerobot') return []
+    if (info.episodes?.length) return info.episodes
+    return Array.from({ length: info.n_episodes }, (_, i) => ({ episode_index: i, length: 0 }))
+  }, [info])
+
   // ── Local file select ─────────────────────────────────────────────────────
 
   const handleLocalSelect = useCallback(async (_: string[], items: FileItem[]) => {
@@ -171,6 +177,10 @@ export default function Visualize() {
     setEpisode(ep)
     setFrameIdx(0)
     setImgErrors({})
+    setRemoteFrameUrls(prev => {
+      Object.values(prev).forEach(u => u && URL.revokeObjectURL(u))
+      return {}
+    })
     const epLen = info?.episodes?.find(e => e.episode_index === ep)?.length ?? info?.n_frames ?? 0
     setTotalFrames(epLen)
   }
@@ -437,7 +447,7 @@ export default function Visualize() {
                     <div style={{ textAlign: 'center', padding: 12 }}><Spin size="small" /></div>
                   ) : (
                     <div style={{
-                      maxHeight: 320, overflowY: 'auto',
+                      maxHeight: 320, overflowY: 'auto', overflowX: 'auto',
                       border: '1px solid #d9d9d9', borderRadius: 6,
                     }}>
                       {rItems.length === 0 ? (
@@ -449,14 +459,14 @@ export default function Visualize() {
                             padding: '6px 10px', cursor: 'pointer',
                             display: 'flex', alignItems: 'center', gap: 6,
                             background: selectedFile?.path === item.path ? '#e6f4ff' : 'transparent',
-                            fontSize: 13,
+                            fontSize: 13, whiteSpace: 'nowrap',
                           }}
                           onClick={() => item.is_dir ? loadRemote(item.path) : handleRemoteSelect(item)}
                         >
                           {item.is_dir
                             ? <FolderOutlined style={{ color: '#faad14', flexShrink: 0 }} />
                             : <FileOutlined style={{ flexShrink: 0 }} />}
-                          <Text ellipsis style={{ fontSize: 13 }}>{item.name}</Text>
+                          <span style={{ fontSize: 13 }}>{item.name}</span>
                         </div>
                       ))}
                     </div>
@@ -475,7 +485,7 @@ export default function Visualize() {
             </div>
           )}
 
-          {info && info.n_episodes > 1 && (
+          {info && info.n_episodes > 1 && info.format !== 'lerobot' && (
             <Form.Item label="Episode" style={{ marginTop: 8 }}>
               <Select
                 value={episode}
@@ -497,7 +507,40 @@ export default function Visualize() {
               请在左侧选择数据集
             </div>
           ) : (
-            <>
+            <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+              {/* Episode list sidebar — LeRobot only */}
+              {info?.format === 'lerobot' && episodeItems.length > 0 && (
+                <div style={{ width: 160, flexShrink: 0 }}>
+                  <div style={{ fontWeight: 500, marginBottom: 6, fontSize: 13, color: '#333' }}>Episodes</div>
+                  <div style={{
+                    maxHeight: 620, overflowY: 'auto',
+                    border: '1px solid #d9d9d9', borderRadius: 6,
+                  }}>
+                    {episodeItems.map(ep => (
+                      <div
+                        key={ep.episode_index}
+                        style={{
+                          padding: '7px 10px', cursor: 'pointer', fontSize: 13,
+                          background: episode === ep.episode_index ? '#e6f4ff' : 'transparent',
+                          borderBottom: '1px solid #f0f0f0',
+                          borderLeft: episode === ep.episode_index ? '3px solid #1677ff' : '3px solid transparent',
+                        }}
+                        onClick={() => handleEpisodeChange(ep.episode_index)}
+                      >
+                        <div style={{ fontWeight: 500 }}>
+                          Episode {String(ep.episode_index).padStart(3, '0')}
+                        </div>
+                        {ep.length > 0 && (
+                          <div style={{ fontSize: 11, color: '#888' }}>{ep.length} 帧</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Main visualization content */}
+              <div style={{ flex: 1, minWidth: 0 }}>
               {/* Camera images */}
               {cameraList.length > 0 ? (
                 <div style={{
@@ -617,7 +660,8 @@ export default function Visualize() {
                 pagination={{ pageSize: 10 }}
                 rowKey="field"
               />
-            </>
+              </div>
+            </div>
           )}
         </Col>
       </Row>
