@@ -150,6 +150,28 @@ export const editValue = (payload: {
   value: unknown
 }) => api.put('/visualize/edit', payload).then(r => r.data)
 
+export const getRemoteDatasetInfo = (creds: SSHCreds, path: string) =>
+  api.post<DatasetInfo>('/visualize/remote/info', { ...creds, path }).then(r => r.data)
+
+export const fetchRemoteFrame = async (
+  creds: SSHCreds, path: string, episode: number, frameIdx: number, cam: string,
+): Promise<string> => {
+  const res = await api.post<Blob>(
+    '/visualize/remote/frame',
+    { ...creds, path, episode, frame_idx: frameIdx, cam },
+    { responseType: 'blob' },
+  )
+  return URL.createObjectURL(res.data)
+}
+
+export const getRemoteSeries = (
+  creds: SSHCreds, path: string, episode: number, field?: string,
+) =>
+  api.post<{ fields: Record<string, number[]> }>(
+    '/visualize/remote/series',
+    { ...creds, path, episode, field },
+  ).then(r => r.data)
+
 // ── Monitor ────────────────────────────────────────────────────────────────
 
 export interface QueueItem {

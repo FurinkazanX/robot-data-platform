@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional
 
 import h5py
 import numpy as np
-import pandas as pd
 import pyarrow.parquet as pq
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
@@ -183,15 +182,18 @@ def _lerobot_frame(p: Path, episode: int, frame_idx: int, cam: Optional[str]) ->
     if not vid_path.exists():
         raise HTTPException(status_code=404, detail="Video not found")
 
+    return _frame_from_mp4(vid_path, frame_idx)
+
+
+def _frame_from_mp4(mp4_path: Path, frame_idx: int) -> Image.Image:
     import cv2
-    cap = cv2.VideoCapture(str(vid_path))
+    cap = cv2.VideoCapture(str(mp4_path))
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
     ret, frame = cap.read()
     cap.release()
     if not ret:
         raise HTTPException(status_code=404, detail="Frame not found")
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    return Image.fromarray(rgb)
+    return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
 
 # ── Series (time-series data) ─────────────────────────────────────────────────
@@ -233,8 +235,12 @@ def _lerobot_series(p: Path, episode: int, field: Optional[str]) -> Dict[str, An
     ep_file = _find_ep_parquet(p, episode)
     if not ep_file:
         raise HTTPException(status_code=404, detail="Episode not found")
+    return _lerobot_series_from_file(ep_file, field)
+
+
+def _lerobot_series_from_file(ep_file: Path, field: Optional[str]) -> Dict[str, Any]:
     df = pq.read_table(ep_file).to_pandas()
-    results = {}
+    results: Dict[str, Any] = {}
     for col in df.columns:
         if field and col != field:
             continue
@@ -290,3 +296,139 @@ def _lerobot_edit(p: Path, episode: int, frame_idx: int, field: str, value: Any)
     df.at[frame_idx, field] = value
     import pyarrow as pa
     pq.write_table(pa.Table.from_pandas(df), ep_file)
+
+
+# ── Remote (SSH + SFTP cache) ─────────────────────────────────────────────────
+
+from app.core.sftp_cache import RemoteSession  # noqa: E402
+
+
+class _RemoteBase(BaseModel):
+    host: str
+    port: int = 22
+    username: str
+    password: str = ""
+
+
+class RemoteInfoReq(_RemoteBase):
+    path: str
+
+
+class RemoteFrameReq(_RemoteBase):
+    path: str
+    episode: int = 0
+    frame_idx: int = 0
+    cam: Optional[str] = None
+
+
+class RemoteSeriesReq(_RemoteBase):
+    path: str
+    episode: int = 0
+    field: Optional[str] = None
+
+
+@router.post("/remote/info")
+def get_remote_info(req: RemoteInfoReq) -> Dict[str, Any]:
+    with RemoteSession(req.host, req.port, req.username, req.password) as sess:
+        if req.path.lower().endswith((".h5", ".hdf5")):
+            local = sess.fetch(req.path)
+            return _hdf5_info(local, req.path)
+
+        # LeRobot directory
+        try:
+            info = json.loads(sess.read_text(f"{req.path}/meta/info.json"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Cannot read dataset info")
+
+        episodes: List[Dict[str, Any]] = []
+        try:
+            for line in sess.read_text(f"{req.path}/meta/episodes.jsonl").splitlines():
+                if line.strip():
+                    episodes.append(json.loads(line))
+        except Exception:
+            pass
+
+        cameras: List[str] = []
+        for candidate in [
+            f"{req.path}/data/chunk-000/videos",
+            f"{req.path}/videos/chunk-000",
+        ]:
+            dirs = sess.list_dirs(candidate)
+            if dirs is not None:
+                cameras = dirs
+                break
+
+        return {
+            "format": "lerobot",
+            "path": req.path,
+            "n_episodes": info.get("total_episodes", len(episodes)),
+            "n_frames": info.get("total_frames", 0),
+            "fps": info.get("fps", 30),
+            "features": info.get("features", {}),
+            "episodes": episodes,
+            "cameras": cameras,
+        }
+
+
+@router.post("/remote/frame")
+def get_remote_frame(req: RemoteFrameReq) -> Response:
+    with RemoteSession(req.host, req.port, req.username, req.password) as sess:
+        if req.path.lower().endswith((".h5", ".hdf5")):
+            local = sess.fetch(req.path)
+            img = _hdf5_frame(local, req.frame_idx, req.cam)
+        else:
+            img = _remote_lerobot_frame(sess, req)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return Response(content=buf.getvalue(), media_type="image/jpeg")
+
+
+def _remote_lerobot_frame(sess: RemoteSession, req: RemoteFrameReq) -> Image.Image:
+    cam_dirs: Optional[List[str]] = None
+    vid_base: Optional[str] = None
+    for candidate in [
+        f"{req.path}/data/chunk-000/videos",
+        f"{req.path}/videos/chunk-000",
+    ]:
+        dirs = sess.list_dirs(candidate)
+        if dirs is not None:
+            vid_base = candidate
+            cam_dirs = dirs
+            break
+
+    if vid_base is None or cam_dirs is None:
+        raise HTTPException(status_code=404, detail="No video data found")
+
+    if req.cam:
+        cam_dirs = [c for c in cam_dirs if c == req.cam]
+    if not cam_dirs:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    remote_mp4 = f"{vid_base}/{cam_dirs[0]}/episode_{req.episode:06d}.mp4"
+    local_mp4 = sess.fetch(remote_mp4)
+    return _frame_from_mp4(local_mp4, req.frame_idx)
+
+
+@router.post("/remote/series")
+def get_remote_series(req: RemoteSeriesReq) -> Dict[str, Any]:
+    with RemoteSession(req.host, req.port, req.username, req.password) as sess:
+        if req.path.lower().endswith((".h5", ".hdf5")):
+            local = sess.fetch(req.path)
+            return _hdf5_series(local, req.field)
+
+        ep_name = f"episode_{req.episode:06d}.parquet"
+        remote_pq: Optional[str] = None
+        for candidate in [
+            f"{req.path}/data/chunk-000/{ep_name}",
+            f"{req.path}/data/chunk-000/episodes/{ep_name}",
+        ]:
+            if sess.stat_exists(candidate):
+                remote_pq = candidate
+                break
+
+        if not remote_pq:
+            raise HTTPException(status_code=404, detail="Episode not found")
+
+        local_pq = sess.fetch(remote_pq)
+    return _lerobot_series_from_file(local_pq, req.field)
+
