@@ -2,6 +2,7 @@ import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-do
 import { Layout, Menu } from 'antd'
 import {
   SwapOutlined, CloudUploadOutlined, PlayCircleOutlined, EyeOutlined, TagsOutlined,
+  TrophyOutlined,
 } from '@ant-design/icons'
 import Convert from './pages/Convert'
 import Transfer from './pages/Transfer'
@@ -9,6 +10,7 @@ import Visualize from './pages/Visualize'
 import Monitor from './pages/Monitor'
 import Tasks from './pages/Tasks'
 import Annotate from './pages/Annotate'
+import RewardAnnotate from './pages/RewardAnnotate'
 import { AppProvider } from './context/AppContext'
 
 const { Header, Content, Sider } = Layout
@@ -19,6 +21,7 @@ const NAV = [
   { key: '/visualize',icon: <PlayCircleOutlined />,   label: <Link to="/visualize">数据可视化</Link> },
   { key: '/monitor',  icon: <EyeOutlined />,          label: <Link to="/monitor">数据监控</Link> },
   { key: '/annotate', icon: <TagsOutlined />,         label: <Link to="/annotate">数据标注</Link> },
+  { key: '/reward',   icon: <TrophyOutlined />,       label: <Link to="/reward">Reward 标注</Link> },
 ]
 
 function AppLayout() {
@@ -48,6 +51,7 @@ function AppLayout() {
               <Route path="/visualize" element={<Visualize />} />
               <Route path="/monitor" element={<Monitor />} />
               <Route path="/annotate" element={<Annotate />} />
+              <Route path="/reward" element={<RewardAnnotate />} />
               <Route path="/tasks" element={<Tasks />} />
             </Routes>
           </Content>

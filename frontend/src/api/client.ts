@@ -238,3 +238,30 @@ export const saveAnnotations = (payload: {
 
 export const getAnnotationLabels = () =>
   api.get<{ suggestions: string[] }>('/annotate/labels').then(r => r.data)
+
+// ── Reward Annotation ──────────────────────────────────────────────────────
+
+export interface RewardSegment {
+  id: string
+  type: 'range' | 'point'
+  startFrame: number
+  endFrame: number
+  value: number
+}
+
+export interface RewardGroup {
+  id: string
+  name: string
+  color: string
+  visible: boolean
+  segments: RewardSegment[]
+}
+
+export const loadReward = (path: string, episode: number) =>
+  api.get<{ groups: RewardGroup[] }>('/annotate/reward', { params: { path, episode } }).then(r => r.data)
+
+export const saveReward = (path: string, episode: number, groups: RewardGroup[]) =>
+  api.post<{ ok: boolean }>('/annotate/reward', { path, episode, groups }).then(r => r.data)
+
+export const applyRewardToDataset = (path: string, episode: number, rewards: number[]) =>
+  api.post<{ ok: boolean }>('/annotate/reward/apply', { path, episode, rewards }).then(r => r.data)
