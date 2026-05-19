@@ -181,7 +181,7 @@ function Timeline({
     setDragInternal(d => d ? { ...d, endFrame: frame } : d)
   }
 
-  const handleMouseUp = (e: React.MouseEvent) => {
+  const handleMouseUp = () => {
     if (resizeDrag) {
       setResizeDrag(null)
       return
