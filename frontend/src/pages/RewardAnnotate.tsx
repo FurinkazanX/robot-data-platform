@@ -16,7 +16,8 @@ import FileBrowser from '../components/FileBrowser'
 import {
   getDatasetInfo, getFrameUrl, loadReward, saveReward,
   applyRewardToDataset, applyRewardRemote,
-  getRemoteDatasetInfo, fetchRemoteFrame, listRemote, testConnection,
+  getRemoteDatasetInfo, listRemote, testConnection,
+  getVideoUrl, cacheRemoteVideo, getCachedVideoUrl,
   type DatasetInfo, type FileItem, type RewardGroup, type RewardSegment,
   type SSHCreds,
 } from '../api/client'
@@ -31,17 +32,17 @@ const TRACK_H = 44
 const SIDEBAR_W = 140
 const MIN_PX_PER_FRAME = 0.5
 const MAX_PX_PER_FRAME = 20
-// annotation bar SVG viewport width (logical units)
 const BAR_VW = 1000
-const BAR_VH = 52
+const BAR_VH = 40
 
 const GROUP_COLORS = [
   '#1890ff', '#52c41a', '#fa8c16', '#f5222d',
   '#722ed1', '#13c2c2', '#eb2f96', '#fadb14',
 ]
 
-type EditMode = 'select' | 'range' | 'point'
 type DataSource = 'local' | 'remote'
+
+interface CameraItem { id: string; label: string }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -84,35 +85,23 @@ function buildCurvePath(
 }
 
 // ── AnnotationBar ─────────────────────────────────────────────────────────────
-// Progress bar with:
-//   • colored segment bands from all groups
-//   • seek playhead (red)
-//   • dual drag handles in range mode (blue)
-//   • point marker in point mode (green)
+// Simple seek bar with colored segment overview — no mode, no handles
 
 interface AnnotationBarProps {
   totalFrames: number
   currentFrame: number
   groups: RewardGroup[]
-  editMode: EditMode
-  rangeStart: number
-  rangeEnd: number
   onSeek: (f: number) => void
-  onRangeChange: (start: number, end: number) => void
 }
 
-function AnnotationBar({
-  totalFrames, currentFrame, groups, editMode,
-  rangeStart, rangeEnd, onSeek, onRangeChange,
-}: AnnotationBarProps) {
+function AnnotationBar({ totalFrames, currentFrame, groups, onSeek }: AnnotationBarProps) {
   const svgRef = useRef<SVGSVGElement>(null)
-  const [drag, setDrag] = useState<'seek' | 'start' | 'end' | null>(null)
+  const [dragging, setDragging] = useState(false)
 
-  // Convert frame ↔ logical viewport X [0, BAR_VW]
   const fToV = (f: number) => (f / Math.max(totalFrames - 1, 1)) * BAR_VW
   const vToF = (vx: number) => clamp(Math.round((vx / BAR_VW) * (totalFrames - 1)), 0, totalFrames - 1)
 
-  const getVX = (e: React.MouseEvent): number => {
+  const getVX = (e: React.MouseEvent) => {
     if (!svgRef.current) return 0
     const rect = svgRef.current.getBoundingClientRect()
     return clamp(((e.clientX - rect.left) / rect.width) * BAR_VW, 0, BAR_VW)
@@ -120,109 +109,52 @@ function AnnotationBar({
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return
-    const vx = getVX(e)
-    if (editMode === 'range') {
-      const ds = Math.abs(vx - fToV(rangeStart))
-      const de = Math.abs(vx - fToV(rangeEnd))
-      if (ds < 20) { setDrag('start'); e.preventDefault(); return }
-      if (de < 20) { setDrag('end'); e.preventDefault(); return }
-    }
-    onSeek(vToF(vx))
-    setDrag('seek')
+    onSeek(vToF(getVX(e)))
+    setDragging(true)
     e.preventDefault()
   }
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!drag) return
-    const f = vToF(getVX(e))
-    if (drag === 'seek') { onSeek(f); return }
-    if (drag === 'start') { onRangeChange(Math.min(f, rangeEnd), rangeEnd); return }
-    if (drag === 'end') { onRangeChange(rangeStart, Math.max(f, rangeStart)); return }
+    if (!dragging) return
+    onSeek(vToF(getVX(e)))
   }
 
-  const handleMouseUp = () => setDrag(null)
+  const handleMouseUp = () => setDragging(false)
 
   const TRACK_Y = BAR_VH / 2
   const phX = fToV(currentFrame)
-  const rsX = fToV(rangeStart)
-  const reX = fToV(rangeEnd)
 
   return (
     <svg
       ref={svgRef}
       viewBox={`0 0 ${BAR_VW} ${BAR_VH}`}
       preserveAspectRatio="none"
-      style={{ width: '100%', height: BAR_VH, display: 'block', cursor: drag === 'seek' ? 'crosshair' : drag ? 'ew-resize' : 'default', userSelect: 'none' }}
+      style={{ width: '100%', height: BAR_VH, display: 'block', cursor: 'crosshair', userSelect: 'none' }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
     >
-      {/* Track background */}
       <rect x={0} y={TRACK_Y - 5} width={BAR_VW} height={10} rx={5} fill="#e0e0e0" />
-
-      {/* Annotated segment bands */}
       {groups.flatMap(g =>
         g.visible ? g.segments.map(seg => {
           const sx = fToV(seg.startFrame)
           const ex = fToV(seg.endFrame + 1)
           return (
             <rect key={seg.id} x={sx} y={TRACK_Y - 8} width={Math.max(ex - sx, 3)} height={16}
-              rx={3} fill={g.color} opacity={0.55} />
+              rx={3} fill={g.color} opacity={0.6} />
           )
         }) : []
       )}
-
-      {/* Range selection highlight */}
-      {editMode === 'range' && (
-        <>
-          <rect x={rsX} y={TRACK_Y - 12} width={Math.max(reX - rsX, 2)} height={24}
-            fill="#1890ff" opacity={0.18} rx={2} />
-
-          {/* Start handle */}
-          <line x1={rsX} y1={6} x2={rsX} y2={BAR_VH - 4} stroke="#1890ff" strokeWidth={2.5} />
-          <polygon
-            points={`${rsX - 7},4 ${rsX + 7},4 ${rsX},16`}
-            fill="#1890ff"
-            style={{ cursor: 'ew-resize' }}
-          />
-          {/* Start frame label */}
-          <rect x={Math.max(rsX - 20, 0)} y={BAR_VH - 16} width={40} height={14} rx={3} fill="#1890ff" opacity={0.85} />
-          <text x={rsX} y={BAR_VH - 6} textAnchor="middle" fontSize={9} fill="#fff" fontWeight="bold">{rangeStart}</text>
-
-          {/* End handle */}
-          <line x1={reX} y1={6} x2={reX} y2={BAR_VH - 4} stroke="#1890ff" strokeWidth={2.5} />
-          <polygon
-            points={`${reX - 7},4 ${reX + 7},4 ${reX},16`}
-            fill="#1890ff"
-            style={{ cursor: 'ew-resize' }}
-          />
-          {/* End frame label */}
-          <rect x={Math.min(reX - 20, BAR_VW - 40)} y={BAR_VH - 16} width={40} height={14} rx={3} fill="#1890ff" opacity={0.85} />
-          <text x={clamp(reX, 20, BAR_VW - 20)} y={BAR_VH - 6} textAnchor="middle" fontSize={9} fill="#fff" fontWeight="bold">{rangeEnd}</text>
-        </>
-      )}
-
-      {/* Point mode marker */}
-      {editMode === 'point' && (
-        <>
-          <line x1={phX} y1={4} x2={phX} y2={BAR_VH - 4} stroke="#52c41a" strokeWidth={2.5} strokeDasharray="4,2" />
-          <polygon points={`${phX - 7},4 ${phX + 7},4 ${phX},14`} fill="#52c41a" />
-        </>
-      )}
-
-      {/* Playhead */}
       <line x1={phX} y1={2} x2={phX} y2={BAR_VH - 2} stroke="#ff4d4f" strokeWidth={2} />
       <polygon points={`${phX - 5},2 ${phX + 5},2 ${phX},12`} fill="#ff4d4f" />
-
-      {/* Frame labels */}
-      <text x={2} y={BAR_VH - 3} fontSize={9} fill="#aaa">0</text>
-      <text x={BAR_VW - 2} y={BAR_VH - 3} textAnchor="end" fontSize={9} fill="#aaa">{totalFrames - 1}</text>
+      <text x={2} y={BAR_VH - 2} fontSize={9} fill="#aaa">0</text>
+      <text x={BAR_VW - 2} y={BAR_VH - 2} textAnchor="end" fontSize={9} fill="#aaa">{totalFrames - 1}</text>
     </svg>
   )
 }
 
-// ── Detail Timeline SVG component ─────────────────────────────────────────────
+// ── Timeline SVG ──────────────────────────────────────────────────────────────
 
 interface TimelineProps {
   totalFrames: number
@@ -230,7 +162,6 @@ interface TimelineProps {
   groups: RewardGroup[]
   rewardSum: Float32Array
   pxPerFrame: number
-  editMode: EditMode
   selectedSegId: string | null
   onSeek: (f: number) => void
   onCreateSegment: (groupId: string, startFrame: number, endFrame: number) => void
@@ -240,7 +171,7 @@ interface TimelineProps {
 
 function Timeline({
   totalFrames, currentFrame, groups, rewardSum,
-  pxPerFrame, editMode, selectedSegId,
+  pxPerFrame, selectedSegId,
   onSeek, onCreateSegment, onSelectSegment, onMoveHandle,
 }: TimelineProps) {
   const svgRef = useRef<SVGSVGElement>(null)
@@ -274,10 +205,8 @@ function Timeline({
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return
     const frame = frameAtX(e.clientX)
-    if (editMode === 'select') { onSeek(frame); return }
     const gid = groupAtY(e.clientY)
     if (!gid) { onSeek(frame); return }
-    if (editMode === 'point') { onCreateSegment(gid, frame, frame); return }
     setDragInternal({ groupId: gid, startFrame: frame, endFrame: frame })
     e.preventDefault()
   }
@@ -293,13 +222,13 @@ function Timeline({
     if (dragInternal) {
       const s = Math.min(dragInternal.startFrame, dragInternal.endFrame)
       const en = Math.max(dragInternal.startFrame, dragInternal.endFrame)
-      if (en > s) onCreateSegment(dragInternal.groupId, s, en)
+      onCreateSegment(dragInternal.groupId, s, en)
       setDragInternal(null)
     }
   }
 
   const rulerTicks = useMemo(() => {
-    const ticks: JSX.Element[] = []
+    const ticks: React.ReactElement[] = []
     const rawStep = totalFrames / 10
     const step = Math.max(1, Math.pow(10, Math.floor(Math.log10(rawStep))) * (rawStep < 5 * Math.pow(10, Math.floor(Math.log10(rawStep))) ? 2 : 5))
     for (let f = 0; f <= totalFrames; f += step) {
@@ -319,7 +248,7 @@ function Timeline({
       ref={svgRef}
       width={svgWidth}
       height={svgHeight}
-      style={{ display: 'block', cursor: editMode === 'select' ? 'crosshair' : 'cell' }}
+      style={{ display: 'block', cursor: 'cell' }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
@@ -430,7 +359,6 @@ export default function RewardAnnotate() {
   const [info, setInfo] = useState<DatasetInfo | null>(null)
   const [episode, setEpisode] = useState(0)
   const [totalFrames, setTotalFrames] = useState(0)
-  const [imgErrors, setImgErrors] = useState<Record<string, boolean>>({})
 
   // Playback
   const [currentFrame, setCurrentFrame] = useState(0)
@@ -438,18 +366,17 @@ export default function RewardAnnotate() {
   const [fps, setFps] = useState(10)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  // Video
+  const [videoUrls, setVideoUrls] = useState<Record<string, string>>({})
+  const [cachingCams, setCachingCams] = useState<Set<string>>(new Set())
+  const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map())
+
   // Reward groups
   const [groups, setGroups] = useState<RewardGroup[]>([])
   const [selected, setSelected] = useState<SelectedSeg | null>(null)
   const [saving, setSaving] = useState(false)
   const [applying, setApplying] = useState(false)
-
-  // Annotation creation panel
-  const [editMode, setEditMode] = useState<EditMode>('select')
-  const [pendingRangeStart, setPendingRangeStart] = useState(0)
-  const [pendingRangeEnd, setPendingRangeEnd] = useState(0)
-  const [pendingValue, setPendingValue] = useState(1.0)
-  const [pendingGroupId, setPendingGroupId] = useState<string>('')
+  const [defaultRewardValue, setDefaultRewardValue] = useState(1.0)
 
   // Timeline view
   const [pxPerFrame, setPxPerFrame] = useState(2)
@@ -462,50 +389,45 @@ export default function RewardAnnotate() {
   const [rPath, setRPath] = useState('/')
   const [rItems, setRItems] = useState<FileItem[]>([])
   const [rLoading, setRLoading] = useState(false)
-  const [remoteFrameUrls, setRemoteFrameUrls] = useState<Record<string, string>>({})
-  const frameReqRef = useRef(0)
   const rCredsRef = useRef(rCreds)
   useEffect(() => { rCredsRef.current = rCreds }, [rCreds])
 
-  useEffect(() => () => {
-    setRemoteFrameUrls(prev => { Object.values(prev).forEach(u => u && URL.revokeObjectURL(u)); return {} })
-  }, [])
-  useEffect(() => {
-    if (dataSource !== 'remote')
-      setRemoteFrameUrls(prev => { Object.values(prev).forEach(u => u && URL.revokeObjectURL(u)); return {} })
-  }, [dataSource])
-
   const patchRCreds = (p: Partial<SSHCreds>) => setRCreds(prev => ({ ...prev, ...p }))
 
-  // ── Sync pending group when groups change ───────────────────────────────────
-  useEffect(() => {
-    if (groups.length > 0 && (!pendingGroupId || !groups.find(g => g.id === pendingGroupId))) {
-      setPendingGroupId(groups[0].id)
-    }
-    if (groups.length === 0) setPendingGroupId('')
-  }, [groups, pendingGroupId])
+  // ── Video URL loading ────────────────────────────────────────────────────────
+  const loadVideos = useCallback(async (
+    path: string, ep: number, cams: CameraItem[], source: DataSource, creds: SSHCreds,
+  ) => {
+    setVideoUrls({})
+    setCachingCams(new Set())
+    if (cams.length === 0) return
 
-  // ── Init range handles when switching mode ──────────────────────────────────
-  useEffect(() => {
-    if (editMode === 'range') {
-      const start = currentFrame
-      const end = Math.min(currentFrame + Math.max(1, Math.floor(totalFrames * 0.05)), totalFrames - 1)
-      setPendingRangeStart(start)
-      setPendingRangeEnd(Math.max(start + 1, end))
-    } else if (editMode === 'point') {
-      setPendingRangeStart(currentFrame)
-      setPendingRangeEnd(currentFrame)
+    if (source === 'local') {
+      const urls: Record<string, string> = {}
+      cams.forEach(cam => { urls[cam.id] = getVideoUrl(path, ep, cam.id) })
+      setVideoUrls(urls)
+    } else {
+      for (const cam of cams) {
+        setCachingCams(prev => new Set([...prev, cam.id]))
+        cacheRemoteVideo(creds, path, ep, cam.id)
+          .then(({ token }) => setVideoUrls(prev => ({ ...prev, [cam.id]: getCachedVideoUrl(token) })))
+          .catch(() => message.error(`缓存视频失败: ${cam.label}`))
+          .finally(() => setCachingCams(prev => { const s = new Set(prev); s.delete(cam.id); return s }))
+      }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editMode])
+  }, [])
 
-  // Sync point handle with current frame when in point mode
+  // Sync all video currentTime when frame changes
   useEffect(() => {
-    if (editMode === 'point') {
-      setPendingRangeStart(currentFrame)
-      setPendingRangeEnd(currentFrame)
-    }
-  }, [editMode, currentFrame])
+    const videoFps = info?.fps ?? 30
+    videoRefs.current.forEach(vid => {
+      if (vid && vid.readyState >= 1) {
+        const target = currentFrame / videoFps
+        if (Math.abs(vid.currentTime - target) > 0.5 / videoFps)
+          vid.currentTime = target
+      }
+    })
+  }, [currentFrame, info?.fps])
 
   // ── Remote connection ───────────────────────────────────────────────────────
   const handleConnect = async () => {
@@ -538,7 +460,8 @@ export default function RewardAnnotate() {
   const loadDataset = useCallback(async (item: FileItem, source: DataSource) => {
     setSelectedFile(item)
     setInfo(null); setEpisode(0); setCurrentFrame(0)
-    setGroups([]); setSelected(null); setImgErrors({})
+    setGroups([]); setSelected(null); setVideoUrls({})
+    videoRefs.current.clear()
     try {
       const d = source === 'remote'
         ? await getRemoteDatasetInfo(rCredsRef.current, item.path)
@@ -550,54 +473,41 @@ export default function RewardAnnotate() {
       setPxPerFrame(clamp(800 / Math.max(frames, 1), MIN_PX_PER_FRAME, MAX_PX_PER_FRAME))
       const r = await loadReward(item.path, 0)
       setGroups(r.groups)
+
+      if (d.format === 'lerobot') {
+        const cams = (d.cameras ?? []).map(c => ({ id: c, label: c }))
+        await loadVideos(item.path, 0, cams, source, rCredsRef.current)
+      }
     } catch { message.error('加载数据集失败') }
-  }, [])
+  }, [loadVideos])
 
   const handleEpisodeChange = async (ep: number) => {
-    if (!selectedFile) return
-    setEpisode(ep); setCurrentFrame(0); setImgErrors({})
-    setGroups([]); setSelected(null)
-    setRemoteFrameUrls(prev => { Object.values(prev).forEach(u => u && URL.revokeObjectURL(u)); return {} })
-    const frames = info?.episodes?.find(e => e.episode_index === ep)?.length ?? info?.n_frames ?? 0
+    if (!selectedFile || !info) return
+    setEpisode(ep); setCurrentFrame(0)
+    setGroups([]); setSelected(null); setVideoUrls({})
+    videoRefs.current.clear()
+    const frames = info.episodes?.find(e => e.episode_index === ep)?.length ?? info.n_frames ?? 0
     setTotalFrames(frames)
     setPxPerFrame(clamp(800 / Math.max(frames, 1), MIN_PX_PER_FRAME, MAX_PX_PER_FRAME))
     try {
       const r = await loadReward(selectedFile.path, ep)
       setGroups(r.groups)
     } catch { /* non-fatal */ }
+
+    if (info.format === 'lerobot') {
+      const cams = (info.cameras ?? []).map(c => ({ id: c, label: c }))
+      loadVideos(selectedFile.path, ep, cams, dataSource, rCredsRef.current)
+    }
   }
 
   // ── Cameras ─────────────────────────────────────────────────────────────────
-  const cameras = useMemo(() => {
+  const cameras = useMemo((): CameraItem[] => {
     if (!info) return []
     if (info.format === 'hdf5')
       return (info.fields ?? []).filter(f => f.is_image)
         .map(f => ({ id: f.key, label: f.key.split('/').filter(Boolean).pop() ?? f.key }))
     return (info.cameras ?? []).map(c => ({ id: c, label: c }))
   }, [info])
-
-  // ── Remote frames: only fetch when NOT playing ──────────────────────────────
-  useEffect(() => {
-    if (dataSource !== 'remote' || !selectedFile || !rConnected || cameras.length === 0) return
-    if (playing) return   // ← don't pile up requests during playback
-    const reqId = ++frameReqRef.current
-    Promise.all(
-      cameras.map(cam =>
-        fetchRemoteFrame(rCredsRef.current, selectedFile.path, episode, currentFrame, cam.id)
-          .then(url => [cam.id, url] as const)
-          .catch(() => [cam.id, ''] as const),
-      ),
-    ).then(entries => {
-      if (frameReqRef.current !== reqId) {
-        entries.forEach(([, u]) => u && URL.revokeObjectURL(u)); return
-      }
-      setRemoteFrameUrls(prev => {
-        Object.values(prev).forEach(u => u && URL.revokeObjectURL(u))
-        return Object.fromEntries(entries.filter(([, u]) => u))
-      })
-    })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataSource, currentFrame, episode, selectedFile?.path, rConnected, cameras, playing])
 
   // ── Playback ─────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -623,7 +533,6 @@ export default function RewardAnnotate() {
       visible: true, segments: [],
     }
     setGroups(prev => [...prev, g])
-    setPendingGroupId(g.id)
   }
 
   const updateGroup = (id: string, patch: Partial<RewardGroup>) =>
@@ -635,21 +544,22 @@ export default function RewardAnnotate() {
   }
 
   // ── Segment management ───────────────────────────────────────────────────────
-  const createSegment = (groupId: string, startFrame: number, endFrame: number, value?: number) => {
+  const createSegment = (groupId: string, startFrame: number, endFrame: number) => {
     const seg: RewardSegment = {
       id: nanoid(), type: startFrame === endFrame ? 'point' : 'range',
-      startFrame, endFrame, value: value ?? pendingValue,
+      startFrame, endFrame, value: defaultRewardValue,
     }
     setGroups(prev => prev.map(g =>
       g.id === groupId ? { ...g, segments: [...g.segments, seg] } : g
     ))
     setSelected({ segId: seg.id, groupId })
-  }
-
-  const handleAddAnnotation = () => {
-    if (!pendingGroupId) { message.warning('请先创建一个 reward 组'); return }
-    createSegment(pendingGroupId, pendingRangeStart, pendingRangeEnd, pendingValue)
-    message.success(`已添加${editMode === 'point' ? '单帧' : '区间'}标注`)
+    if (containerRef.current) {
+      const x = startFrame * pxPerFrame - containerRef.current.clientWidth / 3
+      containerRef.current.scrollLeft = Math.max(0, x)
+    }
+    const grp = groups.find(g => g.id === groupId)
+    const loc = startFrame === endFrame ? `第 ${startFrame} 帧` : `帧 ${startFrame}–${endFrame}`
+    message.success(`已在 "${grp?.name ?? groupId}" 中添加 ${loc}，reward=${defaultRewardValue.toFixed(2)}`)
   }
 
   const updateSegment = (groupId: string, segId: string, patch: Partial<RewardSegment>) =>
@@ -726,12 +636,7 @@ export default function RewardAnnotate() {
   }, [info])
 
   const camCols = cameras.length <= 1 ? 1 : cameras.length <= 4 ? 2 : 3
-
-  const camUrl = (camId: string) => {
-    if (dataSource === 'remote') return remoteFrameUrls[camId] ?? ''
-    if (!selectedFile) return ''
-    return getFrameUrl(selectedFile.path, episode, currentFrame, camId)
-  }
+  const camH = camCols === 1 ? 240 : 160
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
@@ -745,7 +650,7 @@ export default function RewardAnnotate() {
             onChange={e => {
               setDataSource(e.target.value)
               setSelectedFile(null); setInfo(null); setGroups([])
-              setRConnected(false)
+              setVideoUrls({}); setRConnected(false)
             }}>
             <Radio.Button value="local">本地</Radio.Button>
             <Radio.Button value="remote">远程服务器</Radio.Button>
@@ -847,9 +752,7 @@ export default function RewardAnnotate() {
         {/* Right: video + player */}
         <Col span={18}>
           {!selectedFile ? (
-            <div style={{ padding: 40, textAlign: 'center', color: '#999' }}>
-              请在左侧选择 LeRobot 数据集
-            </div>
+            <div style={{ padding: 40, textAlign: 'center', color: '#999' }}>请在左侧选择 LeRobot 数据集</div>
           ) : !info ? (
             <div style={{ padding: 40, textAlign: 'center' }}><Spin /></div>
           ) : (
@@ -885,39 +788,53 @@ export default function RewardAnnotate() {
                     gap: 8, marginBottom: 8,
                   }}>
                     {cameras.map(cam => {
-                      const url = camUrl(cam.id)
-                      const loading = dataSource === 'remote' && !url && !imgErrors[cam.id]
+                      if (info.format === 'lerobot') {
+                        const url = videoUrls[cam.id]
+                        const caching = cachingCams.has(cam.id)
+                        return (
+                          <div key={cam.id} style={{ textAlign: 'center' }}>
+                            {caching ? (
+                              <div style={{ height: camH, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', border: '1px solid #d9d9d9', borderRadius: 4, background: '#111' }}>
+                                <Spin size="small" />
+                                <div style={{ color: '#aaa', fontSize: 11, marginTop: 6 }}>缓存视频中...</div>
+                              </div>
+                            ) : url ? (
+                              <video
+                                key={url}
+                                ref={el => { if (el) videoRefs.current.set(cam.id, el); else videoRefs.current.delete(cam.id) }}
+                                src={url}
+                                style={{ width: '100%', maxHeight: camH, objectFit: 'contain', background: '#000', borderRadius: 4, display: 'block' }}
+                                muted
+                                preload="auto"
+                                onLoadedMetadata={e => {
+                                  const v = e.currentTarget
+                                  v.currentTime = currentFrame / (info.fps ?? 30)
+                                }}
+                              />
+                            ) : (
+                              <div style={{ height: camH, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px dashed #d9d9d9', borderRadius: 4, color: '#999' }}>
+                                无视频
+                              </div>
+                            )}
+                            <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>{cam.label}</div>
+                          </div>
+                        )
+                      }
+                      // HDF5: use frame images
                       return (
                         <div key={cam.id} style={{ textAlign: 'center' }}>
-                          {loading ? (
-                            <div style={{
-                              height: camCols === 1 ? 240 : 160,
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              border: '1px solid #d9d9d9', borderRadius: 4,
-                            }}><Spin size="small" /></div>
-                          ) : !imgErrors[cam.id] && url ? (
-                            <img src={url} alt={cam.label} style={{
-                              width: '100%', maxHeight: camCols === 1 ? 240 : 160,
-                              objectFit: 'contain', border: '1px solid #d9d9d9',
-                              borderRadius: 4, background: '#000',
-                            }} onError={() => setImgErrors(p => ({ ...p, [cam.id]: true }))} />
-                          ) : (
-                            <div style={{
-                              height: camCols === 1 ? 240 : 160,
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              border: '1px dashed #d9d9d9', borderRadius: 4, color: '#999',
-                            }}>无图像{dataSource === 'remote' ? '（暂停后刷新）' : ''}</div>
-                          )}
+                          <img src={getFrameUrl(selectedFile.path, episode, currentFrame, cam.id)}
+                            alt={cam.label}
+                            style={{ width: '100%', maxHeight: camH, objectFit: 'contain', border: '1px solid #d9d9d9', borderRadius: 4, background: '#000' }} />
                           <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>{cam.label}</div>
                         </div>
                       )
                     })}
                   </div>
                 ) : (
-                  <div style={{
-                    height: 100, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    border: '1px dashed #d9d9d9', borderRadius: 4, color: '#999', marginBottom: 8,
-                  }}>无摄像头图像</div>
+                  <div style={{ height: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px dashed #d9d9d9', borderRadius: 4, color: '#999', marginBottom: 8 }}>
+                    无摄像头图像
+                  </div>
                 )}
 
                 {/* Playback controls */}
@@ -932,9 +849,6 @@ export default function RewardAnnotate() {
                   <span style={{ fontSize: 12 }}>FPS:</span>
                   <InputNumber min={1} max={60} value={fps} onChange={v => setFps(v ?? 10)}
                     size="small" style={{ width: 56 }} />
-                  {dataSource === 'remote' && (
-                    <Text type="secondary" style={{ fontSize: 11 }}>（远程：暂停后更新画面）</Text>
-                  )}
                 </Space>
               </div>
             </div>
@@ -946,104 +860,30 @@ export default function RewardAnnotate() {
       {info && totalFrames > 0 && (
         <div style={{ border: '1px solid #e8e8e8', borderRadius: 6, overflow: 'hidden' }}>
 
-          {/* ── Mode toolbar ── */}
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            padding: '6px 12px', background: '#f5f5f5', borderBottom: '1px solid #e8e8e8',
-          }}>
-            <Text style={{ fontSize: 12, color: '#666' }}>标注模式：</Text>
-            <Button size="small" type={editMode === 'select' ? 'primary' : 'default'}
-              onClick={() => setEditMode('select')}>查看 / 拖拽</Button>
-            <Button size="small" type={editMode === 'range' ? 'primary' : 'default'}
-              onClick={() => setEditMode('range')}>区间标注</Button>
-            <Button size="small" type={editMode === 'point' ? 'primary' : 'default'}
-              onClick={() => setEditMode('point')}>单帧标注</Button>
-            <div style={{ flex: 1 }} />
-            <Text style={{ fontSize: 11, color: '#bbb' }}>
-              {editMode === 'range' ? '拖动蓝色把手选择范围，填写 reward 值后点击添加' :
-               editMode === 'point' ? '当前帧即为标注帧，填写 reward 值后点击添加' :
-               '点击时间轴 seek，点击色块选中编辑'}
-            </Text>
-          </div>
-
-          {/* ── Annotation progress bar ── */}
+          {/* ── Seek bar + overview ── */}
           <div style={{ padding: '8px 12px', background: '#fff', borderBottom: '1px solid #f0f0f0' }}>
             <AnnotationBar
               totalFrames={totalFrames}
               currentFrame={currentFrame}
               groups={groups}
-              editMode={editMode}
-              rangeStart={pendingRangeStart}
-              rangeEnd={pendingRangeEnd}
               onSeek={f => { setPlaying(false); setCurrentFrame(f) }}
-              onRangeChange={(s, e) => { setPendingRangeStart(s); setPendingRangeEnd(e) }}
             />
           </div>
 
-          {/* ── Annotation creation panel ── */}
-          {(editMode === 'range' || editMode === 'point') && (
-            <div style={{
-              padding: '10px 16px', background: '#f6ffed',
-              borderBottom: '1px solid #b7eb8f',
-              display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap',
-            }}>
-              {/* Selection info */}
-              <div style={{ minWidth: 130 }}>
-                <Text style={{ fontSize: 12, color: '#555' }}>
-                  {editMode === 'point'
-                    ? <><b>单帧</b> 第 {pendingRangeStart} 帧</>
-                    : <><b>区间</b> 帧 {pendingRangeStart} — {pendingRangeEnd}</>}
-                </Text>
-                {editMode === 'range' && (
-                  <div style={{ display: 'flex', gap: 4, marginTop: 4, alignItems: 'center' }}>
-                    <InputNumber size="small" min={0} max={pendingRangeEnd} value={pendingRangeStart}
-                      onChange={v => setPendingRangeStart(v ?? 0)} style={{ width: 64 }} />
-                    <MinusOutlined style={{ color: '#999', fontSize: 10 }} />
-                    <InputNumber size="small" min={pendingRangeStart} max={totalFrames - 1} value={pendingRangeEnd}
-                      onChange={v => setPendingRangeEnd(v ?? 0)} style={{ width: 64 }} />
-                  </div>
-                )}
-              </div>
-
-              {/* Group selector */}
-              <div>
-                <Text style={{ fontSize: 12, color: '#555', marginRight: 6 }}>目标组：</Text>
-                <Space size={4}>
-                  {groups.map(g => (
-                    <Tag
-                      key={g.id}
-                      color={pendingGroupId === g.id ? g.color : 'default'}
-                      style={{ cursor: 'pointer', border: `2px solid ${pendingGroupId === g.id ? g.color : 'transparent'}` }}
-                      onClick={() => setPendingGroupId(g.id)}
-                    >
-                      {g.name}
-                    </Tag>
-                  ))}
-                  {groups.length === 0 && (
-                    <Text type="secondary" style={{ fontSize: 12 }}>请先添加 reward 组</Text>
-                  )}
-                </Space>
-              </div>
-
-              {/* Reward value */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Text style={{ fontSize: 12, color: '#555' }}>Reward 值：</Text>
-                <Slider min={-1} max={1} step={0.05} value={pendingValue}
-                  onChange={v => setPendingValue(v)}
-                  style={{ width: 150 }} />
-                <InputNumber min={-1} max={1} step={0.05} value={pendingValue}
-                  onChange={v => setPendingValue(v ?? 0)}
-                  style={{ width: 70 }} size="small" />
-              </div>
-
-              {/* Add button */}
-              <Button type="primary" icon={<PlusOutlined />}
-                disabled={!pendingGroupId}
-                onClick={handleAddAnnotation}>
-                添加{editMode === 'point' ? '单帧' : '区间'}标注
-              </Button>
-            </div>
-          )}
+          {/* ── Default reward + hint ── */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 12,
+            padding: '6px 12px', background: '#f5f5f5', borderBottom: '1px solid #e8e8e8', flexWrap: 'wrap',
+          }}>
+            <Text style={{ fontSize: 12, color: '#555', whiteSpace: 'nowrap' }}>默认 Reward：</Text>
+            <Slider min={-1} max={1} step={0.05} value={defaultRewardValue}
+              onChange={v => setDefaultRewardValue(v)} style={{ width: 140, margin: 0 }} />
+            <InputNumber min={-1} max={1} step={0.05} value={defaultRewardValue}
+              onChange={v => setDefaultRewardValue(v ?? 0)} size="small" style={{ width: 68 }} />
+            <Text style={{ fontSize: 11, color: '#bbb' }}>
+              在下方轨道上<b>拖拽</b>添加区间标注，<b>单击</b>添加单帧标注；点击色块可选中编辑
+            </Text>
+          </div>
 
           {/* ── Group sidebar + detail timeline ── */}
           <div style={{ display: 'flex' }}>
@@ -1089,10 +929,7 @@ export default function RewardAnnotate() {
 
             {/* Scrollable detail timeline */}
             <div style={{ flex: 1, overflowX: 'auto', overflowY: 'hidden' }} ref={containerRef}>
-              {/* Zoom controls */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 8px', borderBottom: '1px solid #f0f0f0', background: '#fafafa' }}>
-                <Text style={{ fontSize: 11, color: '#999' }}>详细时间轴（可在轨道上拖拽直接添加标注）：</Text>
-                <div style={{ flex: 1 }} />
                 <Tooltip title="缩小">
                   <Button size="small" icon={<ZoomOutOutlined />}
                     onClick={() => setPxPerFrame(p => clamp(p / 1.5, MIN_PX_PER_FRAME, MAX_PX_PER_FRAME))} />
@@ -1110,9 +947,9 @@ export default function RewardAnnotate() {
               <Timeline
                 totalFrames={totalFrames} currentFrame={currentFrame}
                 groups={groups} rewardSum={rewardSum} pxPerFrame={pxPerFrame}
-                editMode={editMode} selectedSegId={selected?.segId ?? null}
+                selectedSegId={selected?.segId ?? null}
                 onSeek={f => { setPlaying(false); setCurrentFrame(f) }}
-                onCreateSegment={(gid, s, e) => createSegment(gid, s, e)}
+                onCreateSegment={createSegment}
                 onSelectSegment={(segId, groupId) => setSelected(segId && groupId ? { segId, groupId } : null)}
                 onMoveHandle={handleMoveHandle}
               />

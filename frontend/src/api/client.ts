@@ -172,6 +172,17 @@ export const getRemoteSeries = (
     { ...creds, path, episode, field },
   ).then(r => r.data)
 
+export const getVideoUrl = (path: string, episode: number, cam: string): string => {
+  const params = new URLSearchParams({ path, episode: String(episode), cam })
+  return `/api/visualize/video?${params}`
+}
+
+export const cacheRemoteVideo = (creds: SSHCreds, path: string, episode: number, cam: string) =>
+  api.post<{ ok: boolean; token: string }>('/visualize/remote/video/cache', { ...creds, path, episode, cam })
+    .then(r => r.data)
+
+export const getCachedVideoUrl = (token: string) => `/api/visualize/video/cached/${token}`
+
 // ── Monitor ────────────────────────────────────────────────────────────────
 
 export interface QueueItem {

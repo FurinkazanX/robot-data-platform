@@ -8,7 +8,8 @@ import h5py
 import numpy as np
 import pyarrow.parquet as pq
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import Response
+import re
+from fastapi.responses import FileResponse, Response
 from PIL import Image
 from pydantic import BaseModel
 
@@ -431,4 +432,64 @@ def get_remote_series(req: RemoteSeriesReq) -> Dict[str, Any]:
 
         local_pq = sess.fetch(remote_pq)
     return _lerobot_series_from_file(local_pq, req.field)
+
+
+# ── Video serving ─────────────────────────────────────────────────────────────
+
+@router.get("/video")
+def get_video(
+    path: str = Query(...),
+    episode: int = Query(0),
+    cam: str = Query(...),
+):
+    p = _abs(path)
+    videos_dir = _find_videos_dir(p)
+    if not videos_dir:
+        raise HTTPException(status_code=404, detail="No video data found")
+    vid_path = videos_dir / cam / f"episode_{episode:06d}.mp4"
+    if not vid_path.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+    return FileResponse(str(vid_path), media_type="video/mp4")
+
+
+class RemoteVideoCacheReq(_RemoteBase):
+    path: str
+    episode: int = 0
+    cam: str
+
+
+@router.post("/remote/video/cache")
+def cache_remote_video(req: RemoteVideoCacheReq) -> Dict[str, Any]:
+    from app.core.sftp_cache import CACHE_DIR
+    with RemoteSession(req.host, req.port, req.username, req.password) as sess:
+        vid_base: Optional[str] = None
+        cams: Optional[List[str]] = None
+        for candidate in [
+            f"{req.path}/data/chunk-000/videos",
+            f"{req.path}/videos/chunk-000",
+        ]:
+            dirs = sess.list_dirs(candidate)
+            if dirs is not None:
+                vid_base = candidate
+                cams = dirs
+                break
+        if vid_base is None or cams is None:
+            raise HTTPException(status_code=404, detail="No video data found")
+        cam_match = [c for c in cams if c == req.cam]
+        if not cam_match:
+            raise HTTPException(status_code=404, detail=f"Camera '{req.cam}' not found")
+        remote_mp4 = f"{vid_base}/{cam_match[0]}/episode_{req.episode:06d}.mp4"
+        local_path = sess.fetch(remote_mp4)
+    return {"ok": True, "token": local_path.name}
+
+
+@router.get("/video/cached/{token}")
+def get_cached_video(token: str):
+    from app.core.sftp_cache import CACHE_DIR
+    if not re.match(r'^[a-f0-9]{40}\.mp4$', token):
+        raise HTTPException(status_code=403, detail="Invalid token")
+    cache_path = CACHE_DIR / token
+    if not cache_path.exists():
+        raise HTTPException(status_code=404, detail="Cache expired, please reload episode")
+    return FileResponse(str(cache_path), media_type="video/mp4")
 

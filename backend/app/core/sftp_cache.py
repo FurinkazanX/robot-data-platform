@@ -6,7 +6,8 @@ from typing import List, Optional
 
 from app.core.ssh_transfer import SSHTransfer
 
-_CACHE_DIR = Path("/tmp/robot_viz_cache")
+CACHE_DIR = Path("/tmp/robot_viz_cache")
+_CACHE_DIR = CACHE_DIR  # backward compat
 _MAX_BYTES = int(os.environ.get("VIZ_CACHE_GB", "5")) * 1024 ** 3
 
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
