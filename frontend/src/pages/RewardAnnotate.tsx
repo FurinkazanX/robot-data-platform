@@ -26,11 +26,14 @@ const { Title, Text } = Typography
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const RULER_H = 28
-const CURVE_H = 64
+const CURVE_H = 60
 const TRACK_H = 44
 const SIDEBAR_W = 140
 const MIN_PX_PER_FRAME = 0.5
 const MAX_PX_PER_FRAME = 20
+// annotation bar SVG viewport width (logical units)
+const BAR_VW = 1000
+const BAR_VH = 52
 
 const GROUP_COLORS = [
   '#1890ff', '#52c41a', '#fa8c16', '#f5222d',
@@ -39,13 +42,6 @@ const GROUP_COLORS = [
 
 type EditMode = 'select' | 'range' | 'point'
 type DataSource = 'local' | 'remote'
-
-interface DragState {
-  type: 'creating'
-  groupId: string
-  startFrame: number
-  endFrame: number
-}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -75,8 +71,8 @@ function buildCurvePath(
 ): string {
   if (rewards.length === 0) return ''
   const range = maxR - minR || 1
-  const pts: string[] = []
   const step = Math.max(1, Math.round(2 / pxPerFrame))
+  const pts: string[] = []
   for (let f = 0; f < rewards.length; f += step) {
     const x = (f + 0.5) * pxPerFrame
     const y = height - ((rewards[f] - minR) / range) * (height - 4) - 2
@@ -87,7 +83,146 @@ function buildCurvePath(
   return pts.join(' ')
 }
 
-// ── Timeline SVG component ────────────────────────────────────────────────────
+// ── AnnotationBar ─────────────────────────────────────────────────────────────
+// Progress bar with:
+//   • colored segment bands from all groups
+//   • seek playhead (red)
+//   • dual drag handles in range mode (blue)
+//   • point marker in point mode (green)
+
+interface AnnotationBarProps {
+  totalFrames: number
+  currentFrame: number
+  groups: RewardGroup[]
+  editMode: EditMode
+  rangeStart: number
+  rangeEnd: number
+  onSeek: (f: number) => void
+  onRangeChange: (start: number, end: number) => void
+}
+
+function AnnotationBar({
+  totalFrames, currentFrame, groups, editMode,
+  rangeStart, rangeEnd, onSeek, onRangeChange,
+}: AnnotationBarProps) {
+  const svgRef = useRef<SVGSVGElement>(null)
+  const [drag, setDrag] = useState<'seek' | 'start' | 'end' | null>(null)
+
+  // Convert frame ↔ logical viewport X [0, BAR_VW]
+  const fToV = (f: number) => (f / Math.max(totalFrames - 1, 1)) * BAR_VW
+  const vToF = (vx: number) => clamp(Math.round((vx / BAR_VW) * (totalFrames - 1)), 0, totalFrames - 1)
+
+  const getVX = (e: React.MouseEvent): number => {
+    if (!svgRef.current) return 0
+    const rect = svgRef.current.getBoundingClientRect()
+    return clamp(((e.clientX - rect.left) / rect.width) * BAR_VW, 0, BAR_VW)
+  }
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return
+    const vx = getVX(e)
+    if (editMode === 'range') {
+      const ds = Math.abs(vx - fToV(rangeStart))
+      const de = Math.abs(vx - fToV(rangeEnd))
+      if (ds < 20) { setDrag('start'); e.preventDefault(); return }
+      if (de < 20) { setDrag('end'); e.preventDefault(); return }
+    }
+    onSeek(vToF(vx))
+    setDrag('seek')
+    e.preventDefault()
+  }
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!drag) return
+    const f = vToF(getVX(e))
+    if (drag === 'seek') { onSeek(f); return }
+    if (drag === 'start') { onRangeChange(Math.min(f, rangeEnd), rangeEnd); return }
+    if (drag === 'end') { onRangeChange(rangeStart, Math.max(f, rangeStart)); return }
+  }
+
+  const handleMouseUp = () => setDrag(null)
+
+  const TRACK_Y = BAR_VH / 2
+  const phX = fToV(currentFrame)
+  const rsX = fToV(rangeStart)
+  const reX = fToV(rangeEnd)
+
+  return (
+    <svg
+      ref={svgRef}
+      viewBox={`0 0 ${BAR_VW} ${BAR_VH}`}
+      preserveAspectRatio="none"
+      style={{ width: '100%', height: BAR_VH, display: 'block', cursor: drag === 'seek' ? 'crosshair' : drag ? 'ew-resize' : 'default', userSelect: 'none' }}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+    >
+      {/* Track background */}
+      <rect x={0} y={TRACK_Y - 5} width={BAR_VW} height={10} rx={5} fill="#e0e0e0" />
+
+      {/* Annotated segment bands */}
+      {groups.flatMap(g =>
+        g.visible ? g.segments.map(seg => {
+          const sx = fToV(seg.startFrame)
+          const ex = fToV(seg.endFrame + 1)
+          return (
+            <rect key={seg.id} x={sx} y={TRACK_Y - 8} width={Math.max(ex - sx, 3)} height={16}
+              rx={3} fill={g.color} opacity={0.55} />
+          )
+        }) : []
+      )}
+
+      {/* Range selection highlight */}
+      {editMode === 'range' && (
+        <>
+          <rect x={rsX} y={TRACK_Y - 12} width={Math.max(reX - rsX, 2)} height={24}
+            fill="#1890ff" opacity={0.18} rx={2} />
+
+          {/* Start handle */}
+          <line x1={rsX} y1={6} x2={rsX} y2={BAR_VH - 4} stroke="#1890ff" strokeWidth={2.5} />
+          <polygon
+            points={`${rsX - 7},4 ${rsX + 7},4 ${rsX},16`}
+            fill="#1890ff"
+            style={{ cursor: 'ew-resize' }}
+          />
+          {/* Start frame label */}
+          <rect x={Math.max(rsX - 20, 0)} y={BAR_VH - 16} width={40} height={14} rx={3} fill="#1890ff" opacity={0.85} />
+          <text x={rsX} y={BAR_VH - 6} textAnchor="middle" fontSize={9} fill="#fff" fontWeight="bold">{rangeStart}</text>
+
+          {/* End handle */}
+          <line x1={reX} y1={6} x2={reX} y2={BAR_VH - 4} stroke="#1890ff" strokeWidth={2.5} />
+          <polygon
+            points={`${reX - 7},4 ${reX + 7},4 ${reX},16`}
+            fill="#1890ff"
+            style={{ cursor: 'ew-resize' }}
+          />
+          {/* End frame label */}
+          <rect x={Math.min(reX - 20, BAR_VW - 40)} y={BAR_VH - 16} width={40} height={14} rx={3} fill="#1890ff" opacity={0.85} />
+          <text x={clamp(reX, 20, BAR_VW - 20)} y={BAR_VH - 6} textAnchor="middle" fontSize={9} fill="#fff" fontWeight="bold">{rangeEnd}</text>
+        </>
+      )}
+
+      {/* Point mode marker */}
+      {editMode === 'point' && (
+        <>
+          <line x1={phX} y1={4} x2={phX} y2={BAR_VH - 4} stroke="#52c41a" strokeWidth={2.5} strokeDasharray="4,2" />
+          <polygon points={`${phX - 7},4 ${phX + 7},4 ${phX},14`} fill="#52c41a" />
+        </>
+      )}
+
+      {/* Playhead */}
+      <line x1={phX} y1={2} x2={phX} y2={BAR_VH - 2} stroke="#ff4d4f" strokeWidth={2} />
+      <polygon points={`${phX - 5},2 ${phX + 5},2 ${phX},12`} fill="#ff4d4f" />
+
+      {/* Frame labels */}
+      <text x={2} y={BAR_VH - 3} fontSize={9} fill="#aaa">0</text>
+      <text x={BAR_VW - 2} y={BAR_VH - 3} textAnchor="end" fontSize={9} fill="#aaa">{totalFrames - 1}</text>
+    </svg>
+  )
+}
+
+// ── Detail Timeline SVG component ─────────────────────────────────────────────
 
 interface TimelineProps {
   totalFrames: number
@@ -110,7 +245,7 @@ function Timeline({
 }: TimelineProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const [resizeDrag, setResizeDrag] = useState<{ segId: string; groupId: string; edge: 'start' | 'end' } | null>(null)
-  const [dragInternal, setDragInternal] = useState<DragState | null>(null)
+  const [dragInternal, setDragInternal] = useState<{ groupId: string; startFrame: number; endFrame: number } | null>(null)
 
   const svgWidth = Math.max(totalFrames * pxPerFrame, 1)
   const svgHeight = RULER_H + CURVE_H + groups.length * TRACK_H + 8
@@ -133,8 +268,7 @@ function Timeline({
     const rect = svgRef.current.getBoundingClientRect()
     const y = clientY - rect.top
     const idx = Math.floor((y - RULER_H - CURVE_H) / TRACK_H)
-    if (idx >= 0 && idx < groups.length) return groups[idx].id
-    return null
+    return idx >= 0 && idx < groups.length ? groups[idx].id : null
   }
 
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -144,15 +278,12 @@ function Timeline({
     const gid = groupAtY(e.clientY)
     if (!gid) { onSeek(frame); return }
     if (editMode === 'point') { onCreateSegment(gid, frame, frame); return }
-    setDragInternal({ type: 'creating', groupId: gid, startFrame: frame, endFrame: frame })
+    setDragInternal({ groupId: gid, startFrame: frame, endFrame: frame })
     e.preventDefault()
   }
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (resizeDrag) {
-      onMoveHandle(resizeDrag.segId, resizeDrag.groupId, resizeDrag.edge, frameAtX(e.clientX))
-      return
-    }
+    if (resizeDrag) { onMoveHandle(resizeDrag.segId, resizeDrag.groupId, resizeDrag.edge, frameAtX(e.clientX)); return }
     if (!dragInternal) return
     setDragInternal(d => d ? { ...d, endFrame: frameAtX(e.clientX) } : d)
   }
@@ -219,9 +350,8 @@ function Timeline({
               const ex = (seg.endFrame + 1) * pxPerFrame
               const w = Math.max(ex - sx, 2)
               const isSel = seg.id === selectedSegId
-              const alpha = g.visible ? 1 : 0.3
               return (
-                <g key={seg.id} opacity={alpha}>
+                <g key={seg.id} opacity={g.visible ? 1 : 0.3}>
                   {seg.type === 'point' ? (
                     <>
                       <line x1={sx + pxPerFrame / 2} y1={trackY + 4}
@@ -264,14 +394,13 @@ function Timeline({
                 </g>
               )
             })}
-            {/* Drag preview */}
             {dragInternal?.groupId === g.id && (() => {
               const ds = Math.min(dragInternal.startFrame, dragInternal.endFrame) * pxPerFrame
               const dw = Math.max((Math.abs(dragInternal.endFrame - dragInternal.startFrame) + 1) * pxPerFrame, 2)
               return (
                 <rect x={ds} y={trackY + 4} width={dw} height={TRACK_H - 8} rx={3}
-                  fill={g.color} fillOpacity={0.5} stroke={g.color} strokeWidth={1}
-                  strokeDasharray="4,2" style={{ pointerEvents: 'none' }} />
+                  fill={g.color} fillOpacity={0.5} stroke={g.color} strokeDasharray="4,2"
+                  style={{ pointerEvents: 'none' }} />
               )
             })()}
           </g>
@@ -294,10 +423,9 @@ function Timeline({
 interface SelectedSeg { segId: string; groupId: string }
 
 export default function RewardAnnotate() {
-  // Source toggle
   const [dataSource, setDataSource] = useState<DataSource>('local')
 
-  // Dataset state
+  // Dataset
   const [selectedFile, setSelectedFile] = useState<FileItem | null>(null)
   const [info, setInfo] = useState<DatasetInfo | null>(null)
   const [episode, setEpisode] = useState(0)
@@ -316,12 +444,18 @@ export default function RewardAnnotate() {
   const [saving, setSaving] = useState(false)
   const [applying, setApplying] = useState(false)
 
+  // Annotation creation panel
+  const [editMode, setEditMode] = useState<EditMode>('select')
+  const [pendingRangeStart, setPendingRangeStart] = useState(0)
+  const [pendingRangeEnd, setPendingRangeEnd] = useState(0)
+  const [pendingValue, setPendingValue] = useState(1.0)
+  const [pendingGroupId, setPendingGroupId] = useState<string>('')
+
   // Timeline view
   const [pxPerFrame, setPxPerFrame] = useState(2)
-  const [editMode, setEditMode] = useState<EditMode>('select')
   const containerRef = useRef<HTMLDivElement>(null)
 
-  // ── Remote SSH state ────────────────────────────────────────────────────────
+  // ── Remote SSH ──────────────────────────────────────────────────────────────
   const [rCreds, setRCreds] = useState<SSHCreds>({ host: '', port: 22, username: '', password: '' })
   const [rConnected, setRConnected] = useState(false)
   const [rConnecting, setRConnecting] = useState(false)
@@ -333,20 +467,47 @@ export default function RewardAnnotate() {
   const rCredsRef = useRef(rCreds)
   useEffect(() => { rCredsRef.current = rCreds }, [rCreds])
 
-  // Revoke blob URLs on unmount or source switch
   useEffect(() => () => {
     setRemoteFrameUrls(prev => { Object.values(prev).forEach(u => u && URL.revokeObjectURL(u)); return {} })
   }, [])
   useEffect(() => {
-    if (dataSource !== 'remote') {
+    if (dataSource !== 'remote')
       setRemoteFrameUrls(prev => { Object.values(prev).forEach(u => u && URL.revokeObjectURL(u)); return {} })
-    }
   }, [dataSource])
 
   const patchRCreds = (p: Partial<SSHCreds>) => setRCreds(prev => ({ ...prev, ...p }))
 
-  // ── Remote connection ───────────────────────────────────────────────────────
+  // ── Sync pending group when groups change ───────────────────────────────────
+  useEffect(() => {
+    if (groups.length > 0 && (!pendingGroupId || !groups.find(g => g.id === pendingGroupId))) {
+      setPendingGroupId(groups[0].id)
+    }
+    if (groups.length === 0) setPendingGroupId('')
+  }, [groups, pendingGroupId])
 
+  // ── Init range handles when switching mode ──────────────────────────────────
+  useEffect(() => {
+    if (editMode === 'range') {
+      const start = currentFrame
+      const end = Math.min(currentFrame + Math.max(1, Math.floor(totalFrames * 0.05)), totalFrames - 1)
+      setPendingRangeStart(start)
+      setPendingRangeEnd(Math.max(start + 1, end))
+    } else if (editMode === 'point') {
+      setPendingRangeStart(currentFrame)
+      setPendingRangeEnd(currentFrame)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editMode])
+
+  // Sync point handle with current frame when in point mode
+  useEffect(() => {
+    if (editMode === 'point') {
+      setPendingRangeStart(currentFrame)
+      setPendingRangeEnd(currentFrame)
+    }
+  }, [editMode, currentFrame])
+
+  // ── Remote connection ───────────────────────────────────────────────────────
   const handleConnect = async () => {
     if (!rCreds.host || !rCreds.username) return message.warning('请填写主机和用户名')
     setRConnecting(true)
@@ -369,23 +530,15 @@ export default function RewardAnnotate() {
       const { items } = await listRemote(rCreds, path)
       setRPath(path)
       setRItems(items.filter(i => i.is_dir))
-    } catch {
-      message.error('浏览远程目录失败')
-    } finally {
-      setRLoading(false)
-    }
+    } catch { message.error('浏览远程目录失败') }
+    finally { setRLoading(false) }
   }
 
   // ── Load dataset ────────────────────────────────────────────────────────────
-
   const loadDataset = useCallback(async (item: FileItem, source: DataSource) => {
     setSelectedFile(item)
-    setInfo(null)
-    setEpisode(0)
-    setCurrentFrame(0)
-    setGroups([])
-    setSelected(null)
-    setImgErrors({})
+    setInfo(null); setEpisode(0); setCurrentFrame(0)
+    setGroups([]); setSelected(null); setImgErrors({})
     try {
       const d = source === 'remote'
         ? await getRemoteDatasetInfo(rCredsRef.current, item.path)
@@ -394,46 +547,39 @@ export default function RewardAnnotate() {
       const frames = d.episodes?.[0]?.length ?? d.n_frames
       setTotalFrames(frames)
       if (d.fps) setFps(Math.min(d.fps, 30))
-      const initPx = clamp(800 / Math.max(frames, 1), MIN_PX_PER_FRAME, MAX_PX_PER_FRAME)
-      setPxPerFrame(initPx)
+      setPxPerFrame(clamp(800 / Math.max(frames, 1), MIN_PX_PER_FRAME, MAX_PX_PER_FRAME))
       const r = await loadReward(item.path, 0)
       setGroups(r.groups)
-    } catch {
-      message.error('加载数据集失败')
-    }
+    } catch { message.error('加载数据集失败') }
   }, [])
 
   const handleEpisodeChange = async (ep: number) => {
     if (!selectedFile) return
-    setEpisode(ep)
-    setCurrentFrame(0)
-    setImgErrors({})
-    setGroups([])
-    setSelected(null)
+    setEpisode(ep); setCurrentFrame(0); setImgErrors({})
+    setGroups([]); setSelected(null)
     setRemoteFrameUrls(prev => { Object.values(prev).forEach(u => u && URL.revokeObjectURL(u)); return {} })
     const frames = info?.episodes?.find(e => e.episode_index === ep)?.length ?? info?.n_frames ?? 0
     setTotalFrames(frames)
-    const initPx = clamp(800 / Math.max(frames, 1), MIN_PX_PER_FRAME, MAX_PX_PER_FRAME)
-    setPxPerFrame(initPx)
+    setPxPerFrame(clamp(800 / Math.max(frames, 1), MIN_PX_PER_FRAME, MAX_PX_PER_FRAME))
     try {
       const r = await loadReward(selectedFile.path, ep)
       setGroups(r.groups)
     } catch { /* non-fatal */ }
   }
 
-  // ── Remote frame fetching ───────────────────────────────────────────────────
-
+  // ── Cameras ─────────────────────────────────────────────────────────────────
   const cameras = useMemo(() => {
     if (!info) return []
-    if (info.format === 'hdf5') {
+    if (info.format === 'hdf5')
       return (info.fields ?? []).filter(f => f.is_image)
         .map(f => ({ id: f.key, label: f.key.split('/').filter(Boolean).pop() ?? f.key }))
-    }
     return (info.cameras ?? []).map(c => ({ id: c, label: c }))
   }, [info])
 
+  // ── Remote frames: only fetch when NOT playing ──────────────────────────────
   useEffect(() => {
     if (dataSource !== 'remote' || !selectedFile || !rConnected || cameras.length === 0) return
+    if (playing) return   // ← don't pile up requests during playback
     const reqId = ++frameReqRef.current
     Promise.all(
       cameras.map(cam =>
@@ -451,10 +597,9 @@ export default function RewardAnnotate() {
       })
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataSource, currentFrame, episode, selectedFile?.path, rConnected, cameras])
+  }, [dataSource, currentFrame, episode, selectedFile?.path, rConnected, cameras, playing])
 
-  // ── Playback ────────────────────────────────────────────────────────────────
-
+  // ── Playback ─────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (intervalRef.current) clearInterval(intervalRef.current)
     if (!playing) return
@@ -467,15 +612,10 @@ export default function RewardAnnotate() {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
   }, [playing, fps, totalFrames])
 
-  // ── Reward sum ──────────────────────────────────────────────────────────────
+  // ── Reward sum ───────────────────────────────────────────────────────────────
+  const rewardSum = useMemo(() => computeRewardSum(groups, totalFrames), [groups, totalFrames])
 
-  const rewardSum = useMemo(
-    () => computeRewardSum(groups, totalFrames),
-    [groups, totalFrames],
-  )
-
-  // ── Group management ────────────────────────────────────────────────────────
-
+  // ── Group management ─────────────────────────────────────────────────────────
   const addGroup = () => {
     const g: RewardGroup = {
       id: nanoid(), name: `Group ${groups.length + 1}`,
@@ -483,6 +623,7 @@ export default function RewardAnnotate() {
       visible: true, segments: [],
     }
     setGroups(prev => [...prev, g])
+    setPendingGroupId(g.id)
   }
 
   const updateGroup = (id: string, patch: Partial<RewardGroup>) =>
@@ -493,17 +634,22 @@ export default function RewardAnnotate() {
     if (selected?.groupId === id) setSelected(null)
   }
 
-  // ── Segment management ──────────────────────────────────────────────────────
-
-  const createSegment = (groupId: string, startFrame: number, endFrame: number) => {
+  // ── Segment management ───────────────────────────────────────────────────────
+  const createSegment = (groupId: string, startFrame: number, endFrame: number, value?: number) => {
     const seg: RewardSegment = {
       id: nanoid(), type: startFrame === endFrame ? 'point' : 'range',
-      startFrame, endFrame, value: 1.0,
+      startFrame, endFrame, value: value ?? pendingValue,
     }
     setGroups(prev => prev.map(g =>
       g.id === groupId ? { ...g, segments: [...g.segments, seg] } : g
     ))
     setSelected({ segId: seg.id, groupId })
+  }
+
+  const handleAddAnnotation = () => {
+    if (!pendingGroupId) { message.warning('请先创建一个 reward 组'); return }
+    createSegment(pendingGroupId, pendingRangeStart, pendingRangeEnd, pendingValue)
+    message.success(`已添加${editMode === 'point' ? '单帧' : '区间'}标注`)
   }
 
   const updateSegment = (groupId: string, segId: string, patch: Partial<RewardSegment>) =>
@@ -533,19 +679,13 @@ export default function RewardAnnotate() {
       }
     }))
 
-  // ── Save / Apply ────────────────────────────────────────────────────────────
-
+  // ── Save / Apply ─────────────────────────────────────────────────────────────
   const handleSave = async () => {
     if (!selectedFile) return
     setSaving(true)
-    try {
-      await saveReward(selectedFile.path, episode, groups)
-      message.success('Reward 标注已保存')
-    } catch {
-      message.error('保存失败')
-    } finally {
-      setSaving(false)
-    }
+    try { await saveReward(selectedFile.path, episode, groups); message.success('Reward 标注已保存') }
+    catch { message.error('保存失败') }
+    finally { setSaving(false) }
   }
 
   const handleApply = async () => {
@@ -553,22 +693,18 @@ export default function RewardAnnotate() {
     setApplying(true)
     try {
       const rewards = Array.from(rewardSum)
-      if (dataSource === 'remote') {
+      if (dataSource === 'remote')
         await applyRewardRemote(rCredsRef.current, selectedFile.path, episode, rewards)
-      } else {
+      else
         await applyRewardToDataset(selectedFile.path, episode, rewards)
-      }
       message.success('reward 字段已写入数据集 parquet')
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
       message.error(detail ?? '写入失败')
-    } finally {
-      setApplying(false)
-    }
+    } finally { setApplying(false) }
   }
 
-  // ── Keyboard ────────────────────────────────────────────────────────────────
-
+  // ── Keyboard ─────────────────────────────────────────────────────────────────
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Delete' || e.key === 'Backspace') {
       if (selected) deleteSegment(selected.groupId, selected.segId)
@@ -578,8 +714,7 @@ export default function RewardAnnotate() {
     if (e.key === 'ArrowLeft') setCurrentFrame(p => Math.max(p - 1, 0))
   }
 
-  // ── Derived ─────────────────────────────────────────────────────────────────
-
+  // ── Derived ──────────────────────────────────────────────────────────────────
   const selectedSeg = selected
     ? groups.find(g => g.id === selected.groupId)?.segments.find(s => s.id === selected.segId)
     : null
@@ -598,8 +733,7 @@ export default function RewardAnnotate() {
     return getFrameUrl(selectedFile.path, episode, currentFrame, camId)
   }
 
-  // ── Render ──────────────────────────────────────────────────────────────────
-
+  // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div tabIndex={0} onKeyDown={handleKeyDown} style={{ outline: 'none' }}>
       <Title level={4} style={{ marginBottom: 16 }}>Reward 标注</Title>
@@ -607,14 +741,12 @@ export default function RewardAnnotate() {
       {/* Data source toggle */}
       <Form layout="inline" style={{ marginBottom: 12 }}>
         <Form.Item label="数据来源">
-          <Radio.Group
-            value={dataSource}
+          <Radio.Group value={dataSource}
             onChange={e => {
               setDataSource(e.target.value)
               setSelectedFile(null); setInfo(null); setGroups([])
               setRConnected(false)
-            }}
-          >
+            }}>
             <Radio.Button value="local">本地</Radio.Button>
             <Radio.Button value="remote">远程服务器</Radio.Button>
           </Radio.Group>
@@ -622,21 +754,16 @@ export default function RewardAnnotate() {
       </Form>
 
       <Row gutter={16} style={{ marginBottom: 16 }}>
-        {/* ── Left: dataset selector ── */}
+        {/* Left: selector */}
         <Col span={6}>
           {dataSource === 'local' ? (
-            <FileBrowser
-              title="选择 LeRobot 目录"
-              dirOnly
-              onSelect={(_, items) => { if (items[0]) loadDataset(items[0], 'local') }}
-            />
+            <FileBrowser title="选择 LeRobot 目录" dirOnly
+              onSelect={(_, items) => { if (items[0]) loadDataset(items[0], 'local') }} />
           ) : (
-            /* Remote SSH form + browser */
             <div>
               <Form layout="vertical" size="small" style={{ marginBottom: 8 }}>
                 <Form.Item label="主机 IP">
-                  <Input value={rCreds.host}
-                    onChange={e => patchRCreds({ host: e.target.value })}
+                  <Input value={rCreds.host} onChange={e => patchRCreds({ host: e.target.value })}
                     placeholder="192.168.1.100" disabled={rConnected} />
                 </Form.Item>
                 <Form.Item label="端口">
@@ -645,8 +772,7 @@ export default function RewardAnnotate() {
                     style={{ width: '100%' }} disabled={rConnected} />
                 </Form.Item>
                 <Form.Item label="用户名">
-                  <Input value={rCreds.username}
-                    onChange={e => patchRCreds({ username: e.target.value })}
+                  <Input value={rCreds.username} onChange={e => patchRCreds({ username: e.target.value })}
                     disabled={rConnected} />
                 </Form.Item>
                 <Form.Item label="密码">
@@ -664,13 +790,10 @@ export default function RewardAnnotate() {
                       }}>断开</Button>
                     </Space>
                   ) : (
-                    <Button type="primary" loading={rConnecting} onClick={handleConnect} block>
-                      连接
-                    </Button>
+                    <Button type="primary" loading={rConnecting} onClick={handleConnect} block>连接</Button>
                   )}
                 </Form.Item>
               </Form>
-
               {rConnected && (
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
@@ -680,57 +803,48 @@ export default function RewardAnnotate() {
                     )}
                     <Text ellipsis style={{ flex: 1, fontSize: 11, color: '#888' }}>{rPath}</Text>
                     <Tooltip title="选择当前目录作为 LeRobot 数据集">
-                      <Button size="small" type="primary" onClick={() => {
-                        const item: FileItem = {
-                          name: rPath.split('/').pop() || rPath,
-                          path: rPath, is_dir: true, size: null, mtime: 0, ext: null,
-                        }
-                        loadDataset(item, 'remote')
-                      }}>选择</Button>
+                      <Button size="small" type="primary" onClick={() =>
+                        loadDataset({ name: rPath.split('/').pop() || rPath, path: rPath, is_dir: true, size: null, mtime: 0, ext: null }, 'remote')
+                      }>选择</Button>
                     </Tooltip>
                   </div>
-                  {rLoading ? (
-                    <div style={{ textAlign: 'center', padding: 12 }}><Spin size="small" /></div>
-                  ) : (
-                    <div style={{
-                      maxHeight: 300, overflowY: 'auto',
-                      border: '1px solid #d9d9d9', borderRadius: 6,
-                    }}>
-                      {rItems.length === 0
-                        ? <div style={{ padding: '8px 10px', color: '#999', fontSize: 12 }}>无目录</div>
-                        : rItems.map(item => (
-                          <div key={item.path}
-                            style={{
-                              padding: '6px 10px', cursor: 'pointer', fontSize: 13,
-                              display: 'flex', alignItems: 'center', gap: 6,
-                              background: selectedFile?.path === item.path ? '#e6f4ff' : 'transparent',
-                              whiteSpace: 'nowrap',
-                            }}
-                            onClick={() => item.is_dir ? loadRemoteDir(item.path) : undefined}
-                          >
-                            {item.is_dir
-                              ? <FolderOutlined style={{ color: '#faad14', flexShrink: 0 }} />
-                              : <FileOutlined style={{ flexShrink: 0 }} />}
-                            <span>{item.name}</span>
-                          </div>
-                        ))}
-                    </div>
-                  )}
+                  {rLoading
+                    ? <div style={{ textAlign: 'center', padding: 12 }}><Spin size="small" /></div>
+                    : (
+                      <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid #d9d9d9', borderRadius: 6 }}>
+                        {rItems.length === 0
+                          ? <div style={{ padding: '8px 10px', color: '#999', fontSize: 12 }}>无目录</div>
+                          : rItems.map(item => (
+                            <div key={item.path}
+                              style={{
+                                padding: '6px 10px', cursor: 'pointer', fontSize: 13,
+                                display: 'flex', alignItems: 'center', gap: 6,
+                                background: selectedFile?.path === item.path ? '#e6f4ff' : 'transparent',
+                                whiteSpace: 'nowrap',
+                              }}
+                              onClick={() => loadRemoteDir(item.path)}>
+                              {item.is_dir
+                                ? <FolderOutlined style={{ color: '#faad14', flexShrink: 0 }} />
+                                : <FileOutlined style={{ flexShrink: 0 }} />}
+                              <span>{item.name}</span>
+                            </div>
+                          ))}
+                      </div>
+                    )}
                 </div>
               )}
             </div>
           )}
-
           {info && (
             <div style={{ marginTop: 8 }}>
               <Tag color="blue">{info.format.toUpperCase()}</Tag>
-              <Tag>{info.n_episodes} episodes</Tag>
+              <Tag>{info.n_episodes} ep</Tag>
               <Tag>{info.n_frames} 帧</Tag>
             </div>
           )}
         </Col>
 
-        {/* ── Right: video player + episode list ── */}
+        {/* Right: video + player */}
         <Col span={18}>
           {!selectedFile ? (
             <div style={{ padding: 40, textAlign: 'center', color: '#999' }}>
@@ -742,19 +856,18 @@ export default function RewardAnnotate() {
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
               {/* Episode list */}
               {episodeItems.length > 1 && (
-                <div style={{ width: 140, flexShrink: 0 }}>
+                <div style={{ width: 130, flexShrink: 0 }}>
                   <div style={{ fontWeight: 500, marginBottom: 6, fontSize: 13 }}>Episodes</div>
-                  <div style={{ maxHeight: 500, overflowY: 'auto', border: '1px solid #d9d9d9', borderRadius: 6 }}>
+                  <div style={{ maxHeight: 480, overflowY: 'auto', border: '1px solid #d9d9d9', borderRadius: 6 }}>
                     {episodeItems.map(ep => (
                       <div key={ep.episode_index}
                         style={{
-                          padding: '7px 10px', cursor: 'pointer', fontSize: 12,
+                          padding: '6px 10px', cursor: 'pointer', fontSize: 12,
                           background: episode === ep.episode_index ? '#e6f4ff' : 'transparent',
                           borderBottom: '1px solid #f0f0f0',
                           borderLeft: episode === ep.episode_index ? '3px solid #1677ff' : '3px solid transparent',
                         }}
-                        onClick={() => handleEpisodeChange(ep.episode_index)}
-                      >
+                        onClick={() => handleEpisodeChange(ep.episode_index)}>
                         <div style={{ fontWeight: 500 }}>Ep {String(ep.episode_index).padStart(3, '0')}</div>
                         {ep.length > 0 && <div style={{ fontSize: 11, color: '#888' }}>{ep.length} 帧</div>}
                       </div>
@@ -763,7 +876,6 @@ export default function RewardAnnotate() {
                 </div>
               )}
 
-              {/* Main content */}
               <div style={{ flex: 1, minWidth: 0 }}>
                 {/* Camera grid */}
                 {cameras.length > 0 ? (
@@ -779,22 +891,22 @@ export default function RewardAnnotate() {
                         <div key={cam.id} style={{ textAlign: 'center' }}>
                           {loading ? (
                             <div style={{
-                              height: camCols === 1 ? 260 : 160,
+                              height: camCols === 1 ? 240 : 160,
                               display: 'flex', alignItems: 'center', justifyContent: 'center',
                               border: '1px solid #d9d9d9', borderRadius: 4,
                             }}><Spin size="small" /></div>
                           ) : !imgErrors[cam.id] && url ? (
                             <img src={url} alt={cam.label} style={{
-                              width: '100%', maxHeight: camCols === 1 ? 260 : 160,
+                              width: '100%', maxHeight: camCols === 1 ? 240 : 160,
                               objectFit: 'contain', border: '1px solid #d9d9d9',
                               borderRadius: 4, background: '#000',
                             }} onError={() => setImgErrors(p => ({ ...p, [cam.id]: true }))} />
                           ) : (
                             <div style={{
-                              height: camCols === 1 ? 260 : 160,
+                              height: camCols === 1 ? 240 : 160,
                               display: 'flex', alignItems: 'center', justifyContent: 'center',
                               border: '1px dashed #d9d9d9', borderRadius: 4, color: '#999',
-                            }}>无图像</div>
+                            }}>无图像{dataSource === 'remote' ? '（暂停后刷新）' : ''}</div>
                           )}
                           <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>{cam.label}</div>
                         </div>
@@ -809,7 +921,7 @@ export default function RewardAnnotate() {
                 )}
 
                 {/* Playback controls */}
-                <Space style={{ width: '100%', justifyContent: 'center', marginBottom: 4 }}>
+                <Space style={{ width: '100%', justifyContent: 'center', marginBottom: 6 }}>
                   <Button size="small" icon={<StepBackwardOutlined />}
                     onClick={() => setCurrentFrame(p => Math.max(0, p - 1))} />
                   <Button size="small" icon={playing ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
@@ -820,53 +932,122 @@ export default function RewardAnnotate() {
                   <span style={{ fontSize: 12 }}>FPS:</span>
                   <InputNumber min={1} max={60} value={fps} onChange={v => setFps(v ?? 10)}
                     size="small" style={{ width: 56 }} />
+                  {dataSource === 'remote' && (
+                    <Text type="secondary" style={{ fontSize: 11 }}>（远程：暂停后更新画面）</Text>
+                  )}
                 </Space>
-
-                <Slider min={0} max={Math.max(0, totalFrames - 1)} value={currentFrame}
-                  onChange={v => { setPlaying(false); setCurrentFrame(v) }}
-                  tooltip={{ formatter: v => `帧 ${v}` }}
-                  style={{ marginBottom: 4 }} />
               </div>
             </div>
           )}
         </Col>
       </Row>
 
-      {/* ── Timeline ── */}
+      {/* ── Annotation area ── */}
       {info && totalFrames > 0 && (
         <div style={{ border: '1px solid #e8e8e8', borderRadius: 6, overflow: 'hidden' }}>
-          {/* Toolbar */}
+
+          {/* ── Mode toolbar ── */}
           <div style={{
             display: 'flex', alignItems: 'center', gap: 8,
             padding: '6px 12px', background: '#f5f5f5', borderBottom: '1px solid #e8e8e8',
           }}>
-            <Text style={{ fontSize: 12, color: '#666' }}>模式：</Text>
-            {(['select', 'range', 'point'] as EditMode[]).map(m => (
-              <Button key={m} size="small" type={editMode === m ? 'primary' : 'default'}
-                onClick={() => setEditMode(m)}>
-                {m === 'select' ? '选择' : m === 'range' ? '区间' : '单帧'}
-              </Button>
-            ))}
+            <Text style={{ fontSize: 12, color: '#666' }}>标注模式：</Text>
+            <Button size="small" type={editMode === 'select' ? 'primary' : 'default'}
+              onClick={() => setEditMode('select')}>查看 / 拖拽</Button>
+            <Button size="small" type={editMode === 'range' ? 'primary' : 'default'}
+              onClick={() => setEditMode('range')}>区间标注</Button>
+            <Button size="small" type={editMode === 'point' ? 'primary' : 'default'}
+              onClick={() => setEditMode('point')}>单帧标注</Button>
             <div style={{ flex: 1 }} />
-            <Tooltip title="缩小">
-              <Button size="small" icon={<ZoomOutOutlined />}
-                onClick={() => setPxPerFrame(p => clamp(p / 1.5, MIN_PX_PER_FRAME, MAX_PX_PER_FRAME))} />
-            </Tooltip>
-            <Text style={{ fontSize: 11, color: '#999', minWidth: 48, textAlign: 'center' }}>
-              {pxPerFrame.toFixed(1)}px/帧
+            <Text style={{ fontSize: 11, color: '#bbb' }}>
+              {editMode === 'range' ? '拖动蓝色把手选择范围，填写 reward 值后点击添加' :
+               editMode === 'point' ? '当前帧即为标注帧，填写 reward 值后点击添加' :
+               '点击时间轴 seek，点击色块选中编辑'}
             </Text>
-            <Tooltip title="放大">
-              <Button size="small" icon={<ZoomInOutlined />}
-                onClick={() => setPxPerFrame(p => clamp(p * 1.5, MIN_PX_PER_FRAME, MAX_PX_PER_FRAME))} />
-            </Tooltip>
-            <Button size="small" onClick={() => {
-              const w = containerRef.current?.clientWidth ?? 800
-              setPxPerFrame(clamp((w - SIDEBAR_W) / Math.max(totalFrames, 1), MIN_PX_PER_FRAME, MAX_PX_PER_FRAME))
-            }}>适应</Button>
           </div>
 
-          <div style={{ display: 'flex' }} ref={containerRef}>
-            {/* Group sidebar */}
+          {/* ── Annotation progress bar ── */}
+          <div style={{ padding: '8px 12px', background: '#fff', borderBottom: '1px solid #f0f0f0' }}>
+            <AnnotationBar
+              totalFrames={totalFrames}
+              currentFrame={currentFrame}
+              groups={groups}
+              editMode={editMode}
+              rangeStart={pendingRangeStart}
+              rangeEnd={pendingRangeEnd}
+              onSeek={f => { setPlaying(false); setCurrentFrame(f) }}
+              onRangeChange={(s, e) => { setPendingRangeStart(s); setPendingRangeEnd(e) }}
+            />
+          </div>
+
+          {/* ── Annotation creation panel ── */}
+          {(editMode === 'range' || editMode === 'point') && (
+            <div style={{
+              padding: '10px 16px', background: '#f6ffed',
+              borderBottom: '1px solid #b7eb8f',
+              display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap',
+            }}>
+              {/* Selection info */}
+              <div style={{ minWidth: 130 }}>
+                <Text style={{ fontSize: 12, color: '#555' }}>
+                  {editMode === 'point'
+                    ? <><b>单帧</b> 第 {pendingRangeStart} 帧</>
+                    : <><b>区间</b> 帧 {pendingRangeStart} — {pendingRangeEnd}</>}
+                </Text>
+                {editMode === 'range' && (
+                  <div style={{ display: 'flex', gap: 4, marginTop: 4, alignItems: 'center' }}>
+                    <InputNumber size="small" min={0} max={pendingRangeEnd} value={pendingRangeStart}
+                      onChange={v => setPendingRangeStart(v ?? 0)} style={{ width: 64 }} />
+                    <MinusOutlined style={{ color: '#999', fontSize: 10 }} />
+                    <InputNumber size="small" min={pendingRangeStart} max={totalFrames - 1} value={pendingRangeEnd}
+                      onChange={v => setPendingRangeEnd(v ?? 0)} style={{ width: 64 }} />
+                  </div>
+                )}
+              </div>
+
+              {/* Group selector */}
+              <div>
+                <Text style={{ fontSize: 12, color: '#555', marginRight: 6 }}>目标组：</Text>
+                <Space size={4}>
+                  {groups.map(g => (
+                    <Tag
+                      key={g.id}
+                      color={pendingGroupId === g.id ? g.color : 'default'}
+                      style={{ cursor: 'pointer', border: `2px solid ${pendingGroupId === g.id ? g.color : 'transparent'}` }}
+                      onClick={() => setPendingGroupId(g.id)}
+                    >
+                      {g.name}
+                    </Tag>
+                  ))}
+                  {groups.length === 0 && (
+                    <Text type="secondary" style={{ fontSize: 12 }}>请先添加 reward 组</Text>
+                  )}
+                </Space>
+              </div>
+
+              {/* Reward value */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Text style={{ fontSize: 12, color: '#555' }}>Reward 值：</Text>
+                <Slider min={-1} max={1} step={0.05} value={pendingValue}
+                  onChange={v => setPendingValue(v)}
+                  style={{ width: 150 }} />
+                <InputNumber min={-1} max={1} step={0.05} value={pendingValue}
+                  onChange={v => setPendingValue(v ?? 0)}
+                  style={{ width: 70 }} size="small" />
+              </div>
+
+              {/* Add button */}
+              <Button type="primary" icon={<PlusOutlined />}
+                disabled={!pendingGroupId}
+                onClick={handleAddAnnotation}>
+                添加{editMode === 'point' ? '单帧' : '区间'}标注
+              </Button>
+            </div>
+          )}
+
+          {/* ── Group sidebar + detail timeline ── */}
+          <div style={{ display: 'flex' }}>
+            {/* Group labels sidebar */}
             <div style={{ width: SIDEBAR_W, flexShrink: 0, borderRight: '1px solid #e8e8e8', background: '#fafafa' }}>
               <div style={{ height: RULER_H, borderBottom: '1px solid #e8e8e8', background: '#f0f0f0' }} />
               <div style={{
@@ -889,7 +1070,8 @@ export default function RewardAnnotate() {
                     }}
                     onFocus={e => (e.target.style.borderColor = '#1890ff')}
                     onBlur={e => (e.target.style.borderColor = 'transparent')} />
-                  <Button type="text" size="small" style={{ padding: 0, minWidth: 18, color: g.visible ? '#1890ff' : '#ccc' }}
+                  <Button type="text" size="small"
+                    style={{ padding: 0, minWidth: 18, color: g.visible ? '#1890ff' : '#ccc' }}
                     icon={g.visible ? <EyeOutlined /> : <EyeInvisibleOutlined />}
                     onClick={() => updateGroup(g.id, { visible: !g.visible })} />
                   <Popconfirm title="删除该 reward 组？" onConfirm={() => deleteGroup(g.id)} okText="删除" cancelText="取消">
@@ -905,35 +1087,53 @@ export default function RewardAnnotate() {
               </div>
             </div>
 
-            {/* Scrollable timeline */}
-            <div style={{ flex: 1, overflowX: 'auto', overflowY: 'hidden' }}>
+            {/* Scrollable detail timeline */}
+            <div style={{ flex: 1, overflowX: 'auto', overflowY: 'hidden' }} ref={containerRef}>
+              {/* Zoom controls */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 8px', borderBottom: '1px solid #f0f0f0', background: '#fafafa' }}>
+                <Text style={{ fontSize: 11, color: '#999' }}>详细时间轴（可在轨道上拖拽直接添加标注）：</Text>
+                <div style={{ flex: 1 }} />
+                <Tooltip title="缩小">
+                  <Button size="small" icon={<ZoomOutOutlined />}
+                    onClick={() => setPxPerFrame(p => clamp(p / 1.5, MIN_PX_PER_FRAME, MAX_PX_PER_FRAME))} />
+                </Tooltip>
+                <Text style={{ fontSize: 11, color: '#999', minWidth: 44, textAlign: 'center' }}>{pxPerFrame.toFixed(1)}px/帧</Text>
+                <Tooltip title="放大">
+                  <Button size="small" icon={<ZoomInOutlined />}
+                    onClick={() => setPxPerFrame(p => clamp(p * 1.5, MIN_PX_PER_FRAME, MAX_PX_PER_FRAME))} />
+                </Tooltip>
+                <Button size="small" onClick={() => {
+                  const w = containerRef.current?.clientWidth ?? 800
+                  setPxPerFrame(clamp((w - SIDEBAR_W) / Math.max(totalFrames, 1), MIN_PX_PER_FRAME, MAX_PX_PER_FRAME))
+                }}>适应</Button>
+              </div>
               <Timeline
                 totalFrames={totalFrames} currentFrame={currentFrame}
                 groups={groups} rewardSum={rewardSum} pxPerFrame={pxPerFrame}
                 editMode={editMode} selectedSegId={selected?.segId ?? null}
                 onSeek={f => { setPlaying(false); setCurrentFrame(f) }}
-                onCreateSegment={createSegment}
+                onCreateSegment={(gid, s, e) => createSegment(gid, s, e)}
                 onSelectSegment={(segId, groupId) => setSelected(segId && groupId ? { segId, groupId } : null)}
                 onMoveHandle={handleMoveHandle}
               />
             </div>
           </div>
 
-          {/* Segment properties */}
+          {/* ── Selected segment editor ── */}
           {selectedSeg && selected && (
             <div style={{
               padding: '8px 16px', borderTop: '1px solid #e8e8e8', background: '#fff',
               display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap',
             }}>
               <Text style={{ fontSize: 12, color: '#666' }}>
-                已选: <b>{groups.find(g => g.id === selected.groupId)?.name}</b>
-                {' '}{selectedSeg.type === 'point' ? `帧 ${selectedSeg.startFrame}` : `帧 ${selectedSeg.startFrame} – ${selectedSeg.endFrame}`}
+                已选：<b>{groups.find(g => g.id === selected.groupId)?.name}</b>
+                {' '}{selectedSeg.type === 'point' ? `第 ${selectedSeg.startFrame} 帧` : `帧 ${selectedSeg.startFrame} – ${selectedSeg.endFrame}`}
               </Text>
               <Space align="center">
                 <Text style={{ fontSize: 12 }}>Reward：</Text>
                 <Slider min={-1} max={1} step={0.05} value={selectedSeg.value}
                   onChange={v => updateSegment(selected.groupId, selected.segId, { value: v })}
-                  style={{ width: 140 }} />
+                  style={{ width: 150 }} />
                 <InputNumber min={-1} max={1} step={0.05} value={selectedSeg.value}
                   onChange={v => updateSegment(selected.groupId, selected.segId, { value: v ?? 0 })}
                   style={{ width: 72 }} size="small" />
@@ -952,26 +1152,25 @@ export default function RewardAnnotate() {
               )}
               <Button size="small" danger icon={<DeleteOutlined />}
                 onClick={() => deleteSegment(selected.groupId, selected.segId)}>删除</Button>
-              <Text style={{ fontSize: 11, color: '#999' }}>Del 键快速删除</Text>
+              <Text style={{ fontSize: 11, color: '#bbb' }}>Del 键快速删除</Text>
             </div>
           )}
         </div>
       )}
 
-      {/* Footer buttons */}
+      {/* Footer */}
       {info && (
         <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <Tooltip title="保存标注草稿（reward 组配置），不修改数据集文件">
+          <Tooltip title="保存标注草稿，不修改数据集文件">
             <Button icon={<SaveOutlined />} loading={saving} onClick={handleSave} disabled={!selectedFile}>
               保存草稿
             </Button>
           </Tooltip>
-          <Tooltip title={`将 reward 求和结果写入${dataSource === 'remote' ? '远程' : '本地'} parquet，作为 reward 字段与 action/observation 并列`}>
+          <Tooltip title={`将 reward 求和写入${dataSource === 'remote' ? '远程' : '本地'} parquet，与 action/observation 并列`}>
             <Popconfirm
               title="写入数据集"
-              description={`将 episode ${episode} 的 ${totalFrames} 帧 reward 写入 parquet，会覆盖已有 reward 列。确认继续？`}
-              onConfirm={handleApply} okText="写入" cancelText="取消"
-            >
+              description={`将 episode ${episode} 共 ${totalFrames} 帧的 reward 写入 parquet，会覆盖已有 reward 列。确认？`}
+              onConfirm={handleApply} okText="写入" cancelText="取消">
               <Button type="primary" icon={<DatabaseOutlined />} loading={applying}
                 disabled={!selectedFile || groups.length === 0}>
                 写入数据集{dataSource === 'remote' ? '（远程）' : ''}
