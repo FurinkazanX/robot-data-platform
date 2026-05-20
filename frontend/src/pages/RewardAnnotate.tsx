@@ -285,11 +285,13 @@ function Timeline({
                     <>
                       <line x1={sx + pxPerFrame / 2} y1={trackY + 4}
                         x2={sx + pxPerFrame / 2} y2={trackY + TRACK_H - 4}
-                        stroke={g.color} strokeWidth={isSel ? 3 : 2} />
+                        stroke={g.color} strokeWidth={isSel ? 3 : 2}
+                        style={{ pointerEvents: 'none' }} />
                       <polygon
                         points={`${sx + pxPerFrame / 2},${trackY + 6} ${sx + pxPerFrame / 2 - 5},${trackY + 14} ${sx + pxPerFrame / 2 + 5},${trackY + 14}`}
                         fill={g.color} stroke={isSel ? '#ff4d4f' : 'none'} strokeWidth={1.5}
                         style={{ cursor: 'pointer' }}
+                        onMouseDown={e => e.stopPropagation()}
                         onClick={e => { e.stopPropagation(); onSelectSegment(seg.id, g.id) }}
                       />
                     </>
@@ -299,6 +301,7 @@ function Timeline({
                         fill={g.color} fillOpacity={0.35}
                         stroke={isSel ? '#ff4d4f' : g.color} strokeWidth={isSel ? 2 : 1}
                         style={{ cursor: 'pointer' }}
+                        onMouseDown={e => e.stopPropagation()}
                         onClick={e => { e.stopPropagation(); onSelectSegment(seg.id, g.id) }}
                       />
                       {w > 30 && (
