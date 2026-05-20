@@ -282,3 +282,6 @@ export const applyRewardRemote = (creds: SSHCreds, path: string, episode: number
 
 export const getAnnotatedEpisodes = (path: string) =>
   api.get<{ episodes: number[] }>('/annotate/reward/annotated', { params: { path } }).then(r => r.data)
+
+export const getWrittenRewardEpisodes = (path: string) =>
+  api.get<{ episodes: number[] }>('/annotate/reward/written', { params: { path } }).then(r => r.data)

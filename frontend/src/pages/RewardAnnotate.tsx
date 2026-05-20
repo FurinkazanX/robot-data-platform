@@ -17,7 +17,7 @@ import {
   getDatasetInfo, getFrameUrl, loadReward, saveReward,
   applyRewardToDataset, applyRewardRemote,
   getRemoteDatasetInfo, listRemote, testConnection,
-  getVideoUrl, cacheRemoteVideo, getCachedVideoUrl, getAnnotatedEpisodes,
+  getVideoUrl, cacheRemoteVideo, getCachedVideoUrl, getWrittenRewardEpisodes,
   type DatasetInfo, type FileItem, type RewardGroup, type RewardSegment,
   type SSHCreds,
 } from '../api/client'
@@ -479,10 +479,15 @@ export default function RewardAnnotate() {
       setPxPerFrame(clamp(800 / Math.max(frames, 1), MIN_PX_PER_FRAME, MAX_PX_PER_FRAME))
       const r = await loadReward(item.path, ep)
       setGroups(r.groups)
-      try {
-        const { episodes: ann } = await getAnnotatedEpisodes(item.path)
-        setAnnotatedEpisodes(new Set(ann))
-      } catch { /* non-fatal */ }
+      if (source === 'local') {
+        try {
+          const { episodes: ann } = await getWrittenRewardEpisodes(item.path)
+          setAnnotatedEpisodes(new Set(ann))
+        } catch { /* non-fatal */ }
+      }
+      localStorage.setItem('reward_annotate_v1', JSON.stringify({
+        dataSource: source, filePath: item.path, fileName: item.name, episode: ep,
+      }))
       if (d.format === 'lerobot') {
         const cams = (d.cameras ?? []).map(c => ({ id: c, label: c }))
         await loadVideos(item.path, ep, cams, source, rCredsRef.current)
@@ -491,14 +496,12 @@ export default function RewardAnnotate() {
   }, [loadVideos])
 
   // ── Persist UI state to localStorage ────────────────────────────────────────
-  useEffect(() => {
-    if (!selectedFile) return
-    localStorage.setItem('reward_annotate_v1', JSON.stringify({
-      dataSource, filePath: selectedFile.path, fileName: selectedFile.name, episode,
-    }))
-  }, [dataSource, selectedFile, episode])
+  // loadDatasetRef allows the mount-only effect below to call the stable callback
+  // without listing it in deps (which would re-run the effect if the ref ever changed).
+  const loadDatasetRef = useRef(loadDataset)
+  useEffect(() => { loadDatasetRef.current = loadDataset }, [loadDataset])
 
-  // Restore state on mount — must be after loadDataset declaration
+  // Restore state on mount (runs exactly once)
   useEffect(() => {
     const saved = localStorage.getItem('reward_annotate_v1')
     if (!saved) return
@@ -509,10 +512,10 @@ export default function RewardAnnotate() {
           name: state.fileName ?? state.filePath.split('/').pop() ?? '',
           path: state.filePath, is_dir: true, size: null, mtime: 0, ext: null,
         }
-        loadDataset(item, 'local', state.episode ?? 0)
+        loadDatasetRef.current(item, 'local', state.episode ?? 0)
       }
     } catch { /* ignore */ }
-  }, [loadDataset])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Auto-save groups (debounced 2 s) ─────────────────────────────────────────
   useEffect(() => {
@@ -521,8 +524,6 @@ export default function RewardAnnotate() {
     autoSaveTimerRef.current = setTimeout(async () => {
       try {
         await saveReward(selectedFile.path, episode, groups)
-        const { episodes: ann } = await getAnnotatedEpisodes(selectedFile.path)
-        setAnnotatedEpisodes(new Set(ann))
       } catch { /* silent */ }
     }, 2000)
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current) }
@@ -540,6 +541,10 @@ export default function RewardAnnotate() {
       const r = await loadReward(selectedFile.path, ep)
       setGroups(r.groups)
     } catch { /* non-fatal */ }
+
+    localStorage.setItem('reward_annotate_v1', JSON.stringify({
+      dataSource, filePath: selectedFile.path, fileName: selectedFile.name, episode: ep,
+    }))
 
     if (info.format === 'lerobot') {
       const cams = (info.cameras ?? []).map(c => ({ id: c, label: c }))
@@ -642,8 +647,6 @@ export default function RewardAnnotate() {
     setSaving(true)
     try {
       await saveReward(selectedFile.path, episode, groups)
-      const { episodes: ann } = await getAnnotatedEpisodes(selectedFile.path)
-      setAnnotatedEpisodes(new Set(ann))
       message.success('Reward 标注已保存')
     }
     catch { message.error('保存失败') }
@@ -660,6 +663,12 @@ export default function RewardAnnotate() {
       else
         await applyRewardToDataset(selectedFile.path, episode, rewards)
       message.success('reward 字段已写入数据集 parquet')
+      if (dataSource === 'local') {
+        try {
+          const { episodes: ann } = await getWrittenRewardEpisodes(selectedFile.path)
+          setAnnotatedEpisodes(new Set(ann))
+        } catch { /* non-fatal */ }
+      }
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
       message.error(detail ?? '写入失败')

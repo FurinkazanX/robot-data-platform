@@ -156,6 +156,30 @@ def get_annotated_episodes(path: str = Query(...)) -> Dict[str, Any]:
     return {"episodes": annotated}
 
 
+@router.get("/reward/written")
+def get_reward_written_episodes(path: str = Query(...)) -> Dict[str, Any]:
+    """Return episode indices where the parquet file has a 'reward' column."""
+    import pyarrow.parquet as pq
+
+    p = _abs(path)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="路径不存在")
+    data_dir = p / "data"
+    if not data_dir.exists():
+        return {"episodes": []}
+    written = []
+    for chunk_dir in sorted(data_dir.glob("chunk-*")):
+        for pq_file in sorted(chunk_dir.glob("episode_*.parquet")):
+            try:
+                schema = pq.read_schema(pq_file)
+                if "reward" in schema.names:
+                    ep_num = int(pq_file.stem.split("_")[-1])
+                    written.append(ep_num)
+            except Exception:
+                pass
+    return {"episodes": sorted(written)}
+
+
 @router.post("/reward")
 def save_reward(req: RewardSaveRequest) -> Dict[str, Any]:
     data = _reward_load(req.path)
