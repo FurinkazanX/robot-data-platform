@@ -265,3 +265,6 @@ export const saveReward = (path: string, episode: number, groups: RewardGroup[])
 
 export const applyRewardToDataset = (path: string, episode: number, rewards: number[]) =>
   api.post<{ ok: boolean }>('/annotate/reward/apply', { path, episode, rewards }).then(r => r.data)
+
+export const applyRewardRemote = (creds: SSHCreds, path: string, episode: number, rewards: number[]) =>
+  api.post<{ ok: boolean }>('/annotate/reward/apply_remote', { ...creds, path, episode, rewards }).then(r => r.data)

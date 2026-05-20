@@ -22,7 +22,6 @@ def _abs(path: str) -> Path:
 def _annotation_file(p: Path) -> Path:
     if p.is_file():
         return p.parent / f"{p.stem}.annotations.json"
-    # lerobot directory → store inside meta/
     return p / "meta" / "annotations.json"
 
 
@@ -41,6 +40,40 @@ def _save(p: Path, data: Dict[str, Any]):
         json.dump(data, f, indent=2)
 
 
+# ── Reward group storage helpers ──────────────────────────────────────────────
+# Works for both local paths (stored inside meta/) and remote paths (cached in
+# DATA_ROOT/.reward_annotations/).
+
+def _reward_storage_path(raw_path: str) -> Path:
+    base = Path(DATA_ROOT)
+    try:
+        full = (base / raw_path.lstrip("/")).resolve()
+        if str(full).startswith(str(base.resolve())) and full.exists():
+            return _annotation_file(full)
+    except Exception:
+        pass
+    # Remote or non-existent path: use a local cache keyed by sanitized path
+    safe = raw_path.replace("/", "_").replace("\\", "_").replace(":", "_").strip("_")[:200]
+    return base / ".reward_annotations" / f"{safe}.json"
+
+
+def _reward_load(raw_path: str) -> Dict[str, Any]:
+    storage = _reward_storage_path(raw_path)
+    if storage.exists():
+        with open(storage) as f:
+            return json.load(f)
+    return {"version": 1, "episodes": {}}
+
+
+def _reward_save(raw_path: str, data: Dict[str, Any]):
+    storage = _reward_storage_path(raw_path)
+    storage.parent.mkdir(parents=True, exist_ok=True)
+    with open(storage, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+# ── Label annotation (existing) ───────────────────────────────────────────────
+
 @router.get("/load")
 def load_annotations(path: str = Query(...)) -> Dict[str, Any]:
     p = _abs(path)
@@ -53,7 +86,7 @@ class SaveRequest(BaseModel):
     path: str
     episode: int = 0
     labels: List[str] = []
-    frame_rewards: Dict[str, float] = {}   # frame_idx (str) → reward
+    frame_rewards: Dict[str, float] = {}
 
 
 @router.post("/save")
@@ -61,16 +94,13 @@ def save_annotations(req: SaveRequest) -> Dict[str, Any]:
     p = _abs(req.path)
     if not p.exists():
         raise HTTPException(status_code=404, detail="路径不存在")
-
     data = _load(p)
     ep_key = str(req.episode)
     data["episodes"].setdefault(ep_key, {})
     data["episodes"][ep_key]["labels"] = req.labels
     data["episodes"][ep_key]["frame_rewards"] = req.frame_rewards
-
     _save(p, data)
     return {"ok": True}
-
 
 
 PRESET_LABELS = [
@@ -110,10 +140,7 @@ class RewardSaveRequest(BaseModel):
 
 @router.get("/reward")
 def load_reward(path: str = Query(...), episode: int = Query(0)) -> Dict[str, Any]:
-    p = _abs(path)
-    if not p.exists():
-        raise HTTPException(status_code=404, detail="路径不存在")
-    data = _load(p)
+    data = _reward_load(path)
     ep_key = str(episode)
     groups = data.get("episodes", {}).get(ep_key, {}).get("reward_groups", [])
     return {"groups": groups}
@@ -121,28 +148,24 @@ def load_reward(path: str = Query(...), episode: int = Query(0)) -> Dict[str, An
 
 @router.post("/reward")
 def save_reward(req: RewardSaveRequest) -> Dict[str, Any]:
-    p = _abs(req.path)
-    if not p.exists():
-        raise HTTPException(status_code=404, detail="路径不存在")
-    data = _load(p)
+    data = _reward_load(req.path)
     ep_key = str(req.episode)
     data["episodes"].setdefault(ep_key, {})
     data["episodes"][ep_key]["reward_groups"] = [g.model_dump() for g in req.groups]
-    _save(p, data)
+    _reward_save(req.path, data)
     return {"ok": True}
 
 
-# ── Write reward into LeRobot parquet ─────────────────────────────────────────
+# ── Write reward into local LeRobot parquet ───────────────────────────────────
 
 class ApplyRewardRequest(BaseModel):
     path: str
     episode: int
-    rewards: List[float]   # one float per frame
+    rewards: List[float]
 
 
 @router.post("/reward/apply")
 def apply_reward_to_dataset(req: ApplyRewardRequest) -> Dict[str, Any]:
-    """Write per-frame reward values as a 'reward' column into the episode parquet file."""
     import pandas as pd
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -151,7 +174,6 @@ def apply_reward_to_dataset(req: ApplyRewardRequest) -> Dict[str, Any]:
     if not p.exists():
         raise HTTPException(status_code=404, detail="路径不存在")
 
-    # Locate the episode parquet file
     data_dir = p / "data"
     parquet_path: Optional[Path] = None
     if data_dir.exists():
@@ -176,7 +198,6 @@ def apply_reward_to_dataset(req: ApplyRewardRequest) -> Dict[str, Any]:
     df["reward"] = [float(v) for v in req.rewards]
     pq.write_table(pa.Table.from_pandas(df, preserve_index=False), parquet_path)
 
-    # Update meta/info.json features
     info_path = p / "meta" / "info.json"
     if info_path.exists():
         with open(info_path) as f:
@@ -186,3 +207,78 @@ def apply_reward_to_dataset(req: ApplyRewardRequest) -> Dict[str, Any]:
             json.dump(meta, f, indent=2)
 
     return {"ok": True}
+
+
+# ── Write reward into remote LeRobot parquet via SSH ─────────────────────────
+
+class ApplyRewardRemoteRequest(BaseModel):
+    host: str
+    port: int = 22
+    username: str
+    password: Optional[str] = None
+    key_path: Optional[str] = None
+    path: str
+    episode: int
+    rewards: List[float]
+
+
+@router.post("/reward/apply_remote")
+def apply_reward_remote(req: ApplyRewardRemoteRequest) -> Dict[str, Any]:
+    import io
+    import paramiko
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(
+            req.host, port=req.port, username=req.username,
+            password=req.password,
+            key_filename=req.key_path or None,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"SSH 连接失败: {e}")
+
+    sftp = client.open_sftp()
+    try:
+        ep_file = f"{req.path}/data/chunk-000/episode_{req.episode:06d}.parquet"
+
+        buf = io.BytesIO()
+        try:
+            sftp.getfo(ep_file, buf)
+        except Exception:
+            raise HTTPException(status_code=404, detail=f"远程 parquet 文件不存在: {ep_file}")
+
+        buf.seek(0)
+        df = pq.read_table(buf).to_pandas()
+
+        if len(req.rewards) != len(df):
+            raise HTTPException(
+                status_code=400,
+                detail=f"reward 帧数({len(req.rewards)})与数据帧数({len(df)})不匹配",
+            )
+
+        df["reward"] = [float(v) for v in req.rewards]
+        out = io.BytesIO()
+        pq.write_table(pa.Table.from_pandas(df, preserve_index=False), out)
+        out.seek(0)
+        sftp.putfo(out, ep_file)
+
+        # Update remote info.json
+        info_file = f"{req.path}/meta/info.json"
+        try:
+            with sftp.open(info_file, "r") as f:
+                meta = json.load(f)
+            meta.setdefault("features", {})["reward"] = {"dtype": "float32", "shape": [1]}
+            with sftp.open(info_file, "w") as f:
+                f.write(json.dumps(meta, indent=2))
+        except Exception:
+            pass
+
+        return {"ok": True}
+    finally:
+        sftp.close()
+        client.close()
+
