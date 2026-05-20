@@ -146,6 +146,16 @@ def load_reward(path: str = Query(...), episode: int = Query(0)) -> Dict[str, An
     return {"groups": groups}
 
 
+@router.get("/reward/annotated")
+def get_annotated_episodes(path: str = Query(...)) -> Dict[str, Any]:
+    data = _reward_load(path)
+    annotated = sorted(
+        int(k) for k, v in data.get("episodes", {}).items()
+        if v.get("reward_groups")
+    )
+    return {"episodes": annotated}
+
+
 @router.post("/reward")
 def save_reward(req: RewardSaveRequest) -> Dict[str, Any]:
     data = _reward_load(req.path)

@@ -6,7 +6,7 @@ import {
   Slider, Space, Spin, Tag, Tooltip, Typography, message,
 } from 'antd'
 import {
-  ArrowLeftOutlined, DatabaseOutlined, DeleteOutlined,
+  ArrowLeftOutlined, CheckCircleFilled, DatabaseOutlined, DeleteOutlined,
   EyeInvisibleOutlined, EyeOutlined, FileOutlined, FolderOutlined,
   MinusOutlined, PauseCircleOutlined, PlayCircleOutlined,
   PlusOutlined, SaveOutlined, StepBackwardOutlined, StepForwardOutlined,
@@ -17,7 +17,7 @@ import {
   getDatasetInfo, getFrameUrl, loadReward, saveReward,
   applyRewardToDataset, applyRewardRemote,
   getRemoteDatasetInfo, listRemote, testConnection,
-  getVideoUrl, cacheRemoteVideo, getCachedVideoUrl,
+  getVideoUrl, cacheRemoteVideo, getCachedVideoUrl, getAnnotatedEpisodes,
   type DatasetInfo, type FileItem, type RewardGroup, type RewardSegment,
   type SSHCreds,
 } from '../api/client'
@@ -380,6 +380,8 @@ export default function RewardAnnotate() {
   const [saving, setSaving] = useState(false)
   const [applying, setApplying] = useState(false)
   const [defaultRewardValue, setDefaultRewardValue] = useState(1.0)
+  const [annotatedEpisodes, setAnnotatedEpisodes] = useState<Set<number>>(new Set())
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Timeline view
   const [pxPerFrame, setPxPerFrame] = useState(2)
@@ -432,7 +434,6 @@ export default function RewardAnnotate() {
     })
   }, [currentFrame, info?.fps])
 
-  // ── Remote connection ───────────────────────────────────────────────────────
   const handleConnect = async () => {
     if (!rCreds.host || !rCreds.username) return message.warning('请填写主机和用户名')
     setRConnecting(true)
@@ -460,7 +461,7 @@ export default function RewardAnnotate() {
   }
 
   // ── Load dataset ────────────────────────────────────────────────────────────
-  const loadDataset = useCallback(async (item: FileItem, source: DataSource) => {
+  const loadDataset = useCallback(async (item: FileItem, source: DataSource, targetEpisode = 0) => {
     setSelectedFile(item)
     setInfo(null); setEpisode(0); setCurrentFrame(0)
     setGroups([]); setSelected(null); setVideoUrls({})
@@ -470,19 +471,62 @@ export default function RewardAnnotate() {
         ? await getRemoteDatasetInfo(rCredsRef.current, item.path)
         : await getDatasetInfo(item.path)
       setInfo(d)
-      const frames = d.episodes?.[0]?.length ?? d.n_frames
+      const ep = Math.min(Math.max(targetEpisode, 0), Math.max(d.n_episodes - 1, 0))
+      setEpisode(ep)
+      const frames = d.episodes?.find((ei: { episode_index: number }) => ei.episode_index === ep)?.length ?? d.n_frames
       setTotalFrames(frames)
       if (d.fps) setFps(Math.min(d.fps, 30))
       setPxPerFrame(clamp(800 / Math.max(frames, 1), MIN_PX_PER_FRAME, MAX_PX_PER_FRAME))
-      const r = await loadReward(item.path, 0)
+      const r = await loadReward(item.path, ep)
       setGroups(r.groups)
-
+      try {
+        const { episodes: ann } = await getAnnotatedEpisodes(item.path)
+        setAnnotatedEpisodes(new Set(ann))
+      } catch { /* non-fatal */ }
       if (d.format === 'lerobot') {
         const cams = (d.cameras ?? []).map(c => ({ id: c, label: c }))
-        await loadVideos(item.path, 0, cams, source, rCredsRef.current)
+        await loadVideos(item.path, ep, cams, source, rCredsRef.current)
       }
     } catch { message.error('加载数据集失败') }
   }, [loadVideos])
+
+  // ── Persist UI state to localStorage ────────────────────────────────────────
+  useEffect(() => {
+    if (!selectedFile) return
+    localStorage.setItem('reward_annotate_v1', JSON.stringify({
+      dataSource, filePath: selectedFile.path, fileName: selectedFile.name, episode,
+    }))
+  }, [dataSource, selectedFile, episode])
+
+  // Restore state on mount — must be after loadDataset declaration
+  useEffect(() => {
+    const saved = localStorage.getItem('reward_annotate_v1')
+    if (!saved) return
+    try {
+      const state = JSON.parse(saved)
+      if (state.dataSource === 'local' && state.filePath) {
+        const item: FileItem = {
+          name: state.fileName ?? state.filePath.split('/').pop() ?? '',
+          path: state.filePath, is_dir: true, size: null, mtime: 0, ext: null,
+        }
+        loadDataset(item, 'local', state.episode ?? 0)
+      }
+    } catch { /* ignore */ }
+  }, [loadDataset])
+
+  // ── Auto-save groups (debounced 2 s) ─────────────────────────────────────────
+  useEffect(() => {
+    if (!selectedFile || groups.length === 0) return
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
+    autoSaveTimerRef.current = setTimeout(async () => {
+      try {
+        await saveReward(selectedFile.path, episode, groups)
+        const { episodes: ann } = await getAnnotatedEpisodes(selectedFile.path)
+        setAnnotatedEpisodes(new Set(ann))
+      } catch { /* silent */ }
+    }, 2000)
+    return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current) }
+  }, [groups, selectedFile, episode])
 
   const handleEpisodeChange = async (ep: number) => {
     if (!selectedFile || !info) return
@@ -596,7 +640,12 @@ export default function RewardAnnotate() {
   const handleSave = async () => {
     if (!selectedFile) return
     setSaving(true)
-    try { await saveReward(selectedFile.path, episode, groups); message.success('Reward 标注已保存') }
+    try {
+      await saveReward(selectedFile.path, episode, groups)
+      const { episodes: ann } = await getAnnotatedEpisodes(selectedFile.path)
+      setAnnotatedEpisodes(new Set(ann))
+      message.success('Reward 标注已保存')
+    }
     catch { message.error('保存失败') }
     finally { setSaving(false) }
   }
@@ -772,10 +821,16 @@ export default function RewardAnnotate() {
                           background: episode === ep.episode_index ? '#e6f4ff' : 'transparent',
                           borderBottom: '1px solid #f0f0f0',
                           borderLeft: episode === ep.episode_index ? '3px solid #1677ff' : '3px solid transparent',
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                         }}
                         onClick={() => handleEpisodeChange(ep.episode_index)}>
-                        <div style={{ fontWeight: 500 }}>Ep {String(ep.episode_index).padStart(3, '0')}</div>
-                        {ep.length > 0 && <div style={{ fontSize: 11, color: '#888' }}>{ep.length} 帧</div>}
+                        <div>
+                          <div style={{ fontWeight: 500 }}>Ep {String(ep.episode_index).padStart(3, '0')}</div>
+                          {ep.length > 0 && <div style={{ fontSize: 11, color: '#888' }}>{ep.length} 帧</div>}
+                        </div>
+                        {annotatedEpisodes.has(ep.episode_index) && (
+                          <CheckCircleFilled style={{ color: '#52c41a', fontSize: 12, flexShrink: 0 }} />
+                        )}
                       </div>
                     ))}
                   </div>

@@ -279,3 +279,6 @@ export const applyRewardToDataset = (path: string, episode: number, rewards: num
 
 export const applyRewardRemote = (creds: SSHCreds, path: string, episode: number, rewards: number[]) =>
   api.post<{ ok: boolean }>('/annotate/reward/apply_remote', { ...creds, path, episode, rewards }).then(r => r.data)
+
+export const getAnnotatedEpisodes = (path: string) =>
+  api.get<{ episodes: number[] }>('/annotate/reward/annotated', { params: { path } }).then(r => r.data)
