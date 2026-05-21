@@ -2,7 +2,7 @@ import {
   useCallback, useEffect, useMemo, useRef, useState, KeyboardEvent,
 } from 'react'
 import {
-  Button, Col, Form, Input, InputNumber, Popconfirm, Radio, Row,
+  Button, Col, Divider, Form, Input, InputNumber, Popconfirm, Radio, Row,
   Slider, Space, Spin, Tag, Tooltip, Typography, message,
 } from 'antd'
 import {
@@ -163,6 +163,7 @@ interface TimelineProps {
   rewardSum: Float32Array
   pxPerFrame: number
   selectedSegId: string | null
+  pendingInPoint: number | null
   onSeek: (f: number) => void
   onCreateSegment: (groupId: string, startFrame: number, endFrame: number) => void
   onSelectSegment: (segId: string | null, groupId?: string) => void
@@ -171,7 +172,7 @@ interface TimelineProps {
 
 function Timeline({
   totalFrames, currentFrame, groups, rewardSum,
-  pxPerFrame, selectedSegId,
+  pxPerFrame, selectedSegId, pendingInPoint,
   onSeek, onCreateSegment, onSelectSegment, onMoveHandle,
 }: TimelineProps) {
   const svgRef = useRef<SVGSVGElement>(null)
@@ -242,6 +243,12 @@ function Timeline({
     }
     return ticks
   }, [totalFrames, pxPerFrame])
+
+  // Pending in-point visuals (computed before return to avoid IIFE JSX issues)
+  const pendingInX = pendingInPoint !== null ? pendingInPoint * pxPerFrame + pxPerFrame / 2 : 0
+  const pendingCurX = currentFrame * pxPerFrame + pxPerFrame / 2
+  const pendingLo = Math.min(pendingInX, pendingCurX)
+  const pendingHi = Math.max(pendingInX, pendingCurX)
 
   return (
     <svg
@@ -339,6 +346,18 @@ function Timeline({
         )
       })}
 
+      {/* Pending in-point: green overlay + dashed marker */}
+      {pendingInPoint !== null && (
+        <g>
+          <rect x={pendingLo} y={RULER_H} width={Math.max(pendingHi - pendingLo, 1)} height={svgHeight - RULER_H}
+            fill="#52c41a" fillOpacity={0.12} style={{ pointerEvents: 'none' }} />
+          <line x1={pendingInX} y1={0} x2={pendingInX} y2={svgHeight}
+            stroke="#52c41a" strokeWidth={2} strokeDasharray="5,3" style={{ pointerEvents: 'none' }} />
+          <polygon points={`${pendingInX - 5},0 ${pendingInX + 5},0 ${pendingInX},10`}
+            fill="#52c41a" style={{ pointerEvents: 'none' }} />
+        </g>
+      )}
+
       {/* Playhead */}
       <line x1={currentFrame * pxPerFrame + pxPerFrame / 2} y1={0}
         x2={currentFrame * pxPerFrame + pxPerFrame / 2} y2={svgHeight}
@@ -382,6 +401,8 @@ export default function RewardAnnotate() {
   const [defaultRewardValue, setDefaultRewardValue] = useState(1.0)
   const [annotatedEpisodes, setAnnotatedEpisodes] = useState<Set<number>>(new Set())
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [pendingInPoint, setPendingInPoint] = useState<number | null>(null)
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null)
 
   // Timeline view
   const [pxPerFrame, setPxPerFrame] = useState(2)
@@ -531,7 +552,7 @@ export default function RewardAnnotate() {
 
   const handleEpisodeChange = async (ep: number) => {
     if (!selectedFile || !info) return
-    setEpisode(ep); setCurrentFrame(0)
+    setEpisode(ep); setCurrentFrame(0); setPendingInPoint(null)
     setGroups([]); setSelected(null); setVideoUrls({})
     videoRefs.current.clear()
     const frames = info.episodes?.find(e => e.episode_index === ep)?.length ?? info.n_frames ?? 0
@@ -585,6 +606,7 @@ export default function RewardAnnotate() {
       visible: true, segments: [],
     }
     setGroups(prev => [...prev, g])
+    setActiveGroupId(g.id)
   }
 
   const updateGroup = (id: string, patch: Partial<RewardGroup>) =>
@@ -593,6 +615,7 @@ export default function RewardAnnotate() {
   const deleteGroup = (id: string) => {
     setGroups(prev => prev.filter(g => g.id !== id))
     if (selected?.groupId === id) setSelected(null)
+    if (activeGroupId === id) setActiveGroupId(null)
   }
 
   // ── Segment management ───────────────────────────────────────────────────────
@@ -613,6 +636,30 @@ export default function RewardAnnotate() {
     const loc = startFrame === endFrame ? `第 ${startFrame} 帧` : `帧 ${startFrame}–${endFrame}`
     message.success(`已在 "${grp?.name ?? groupId}" 中添加 ${loc}，reward=${defaultRewardValue.toFixed(2)}`)
   }
+
+  // Resolved active group: explicit choice > last selected's group > first group
+  const resolvedActiveGroupId =
+    (activeGroupId && groups.find((g: RewardGroup) => g.id === activeGroupId))
+      ? activeGroupId
+      : (selected?.groupId ?? groups[0]?.id ?? null)
+
+  // ── Mark In / Out / Point ────────────────────────────────────────────────────
+  const markInPoint = () => setPendingInPoint(currentFrame)
+
+  const markOutPoint = () => {
+    if (pendingInPoint === null) { message.warning('请先按 I 标记入点'); return }
+    if (!resolvedActiveGroupId) { message.warning('请先添加标注组'); return }
+    const s = Math.min(pendingInPoint, currentFrame)
+    const e = Math.max(pendingInPoint, currentFrame)
+    createSegment(resolvedActiveGroupId, s, e)
+    setPendingInPoint(null)
+  }
+
+  const markPointAtPlayhead = () => {
+    if (!resolvedActiveGroupId) { message.warning('请先添加标注组'); return }
+    createSegment(resolvedActiveGroupId, currentFrame, currentFrame)
+  }
+
 
   const updateSegment = (groupId: string, segId: string, patch: Partial<RewardSegment>) =>
     setGroups(prev => prev.map(g =>
@@ -675,12 +722,18 @@ export default function RewardAnnotate() {
 
   // ── Keyboard ─────────────────────────────────────────────────────────────────
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    // Don't intercept when the user is typing in an input/textarea
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
     if (e.key === 'Delete' || e.key === 'Backspace') {
       if (selected) deleteSegment(selected.groupId, selected.segId)
     }
     if (e.key === ' ') { e.preventDefault(); setPlaying(p => !p) }
-    if (e.key === 'ArrowRight') setCurrentFrame(p => Math.min(p + 1, totalFrames - 1))
-    if (e.key === 'ArrowLeft') setCurrentFrame(p => Math.max(p - 1, 0))
+    if (e.key === 'ArrowRight') { e.preventDefault(); setCurrentFrame((p: number) => Math.min(p + 1, totalFrames - 1)) }
+    if (e.key === 'ArrowLeft') { e.preventDefault(); setCurrentFrame((p: number) => Math.max(p - 1, 0)) }
+    if (e.key === 'i' || e.key === 'I') { e.preventDefault(); markInPoint() }
+    if (e.key === 'o' || e.key === 'O') { e.preventDefault(); markOutPoint() }
+    if (e.key === 'p' || e.key === 'P') { e.preventDefault(); markPointAtPlayhead() }
+    if (e.key === 'Escape') { setPendingInPoint(null); setSelected(null) }
   }
 
   // ── Derived ──────────────────────────────────────────────────────────────────
@@ -910,7 +963,12 @@ export default function RewardAnnotate() {
                     type="primary" onClick={() => setPlaying(p => !p)} />
                   <Button size="small" icon={<StepForwardOutlined />}
                     onClick={() => setCurrentFrame(p => Math.min(totalFrames - 1, p + 1))} />
-                  <Text type="secondary" style={{ fontSize: 12 }}>帧 {currentFrame} / {totalFrames - 1}</Text>
+                  <InputNumber
+                    min={0} max={Math.max(0, totalFrames - 1)} value={currentFrame}
+                    size="small" style={{ width: 72 }}
+                    onChange={(v: number | null) => { if (v != null) { setPlaying(false); setCurrentFrame(Math.min(Math.max(0, v), totalFrames - 1)) } }}
+                  />
+                  <Text type="secondary" style={{ fontSize: 12 }}>/ {totalFrames - 1}</Text>
                   <span style={{ fontSize: 12 }}>FPS:</span>
                   <InputNumber min={1} max={60} value={fps} onChange={v => setFps(v ?? 10)}
                     size="small" style={{ width: 56 }} />
@@ -935,11 +993,32 @@ export default function RewardAnnotate() {
             />
           </div>
 
-          {/* ── Default reward + hint ── */}
+          {/* ── Mark In/Out/Point toolbar + Default reward ── */}
           <div style={{
             display: 'flex', alignItems: 'center', gap: 12,
             padding: '6px 12px', background: '#f5f5f5', borderBottom: '1px solid #e8e8e8', flexWrap: 'wrap',
           }}>
+            {/* I / O / P buttons */}
+            <Tooltip title="标记入点 (I)">
+              <Button size="small" onClick={markInPoint}
+                style={{ fontWeight: 700, color: '#52c41a', borderColor: pendingInPoint !== null ? '#52c41a' : undefined, background: pendingInPoint !== null ? '#f6ffed' : undefined }}>
+                I
+              </Button>
+            </Tooltip>
+            <Tooltip title="标记出点并创建区间 (O)">
+              <Button size="small" onClick={markOutPoint} style={{ fontWeight: 700, color: '#1677ff' }}>O</Button>
+            </Tooltip>
+            <Tooltip title="标记当前帧为单点标注 (P)">
+              <Button size="small" onClick={markPointAtPlayhead} style={{ fontWeight: 700, color: '#fa8c16' }}>P</Button>
+            </Tooltip>
+            {pendingInPoint !== null && (
+              <Text style={{ fontSize: 11, color: '#52c41a' }}>
+                入点: 第 {pendingInPoint} 帧
+                <Button type="link" size="small" style={{ color: '#999', padding: '0 4px' }}
+                  onClick={() => setPendingInPoint(null)}>✕</Button>
+              </Text>
+            )}
+            <Divider type="vertical" style={{ height: 16, margin: 0 }} />
             <Text style={{ fontSize: 12, color: '#555', whiteSpace: 'nowrap' }}>默认 Reward：</Text>
             <Slider min={-1} max={1} step={0.05} value={defaultRewardValue}
               onChange={v => setDefaultRewardValue(v)} style={{ width: 140, margin: 0 }} />
@@ -959,12 +1038,18 @@ export default function RewardAnnotate() {
                 height: CURVE_H, display: 'flex', alignItems: 'center',
                 paddingLeft: 8, fontSize: 11, color: '#666', borderBottom: '1px solid #e8e8e8',
               }}>Reward Sum</div>
-              {groups.map((g, gi) => (
-                <div key={g.id} style={{
-                  height: TRACK_H, display: 'flex', alignItems: 'center',
-                  padding: '0 4px 0 8px', borderBottom: '1px solid #e8e8e8',
-                  background: gi % 2 === 0 ? '#fff' : '#fafafa', gap: 4, overflow: 'hidden',
-                }}>
+              {groups.map((g, gi) => {
+                const isActive = g.id === resolvedActiveGroupId
+                return (
+                <div key={g.id}
+                  onClick={() => setActiveGroupId(g.id)}
+                  style={{
+                    height: TRACK_H, display: 'flex', alignItems: 'center',
+                    padding: '0 4px 0 6px', borderBottom: '1px solid #e8e8e8',
+                    borderLeft: isActive ? `3px solid ${g.color}` : '3px solid transparent',
+                    background: isActive ? '#e6f4ff' : gi % 2 === 0 ? '#fff' : '#fafafa',
+                    gap: 4, overflow: 'hidden', cursor: 'pointer',
+                  }}>
                   <input type="color" value={g.color}
                     onChange={e => updateGroup(g.id, { color: e.target.value })}
                     style={{ width: 18, height: 18, border: 'none', padding: 0, cursor: 'pointer', background: 'none' }} />
@@ -984,7 +1069,8 @@ export default function RewardAnnotate() {
                       icon={<DeleteOutlined style={{ fontSize: 11 }} />} />
                   </Popconfirm>
                 </div>
-              ))}
+                )
+              })}
               <div style={{ height: 36, display: 'flex', alignItems: 'center', paddingLeft: 8 }}>
                 <Button size="small" icon={<PlusOutlined />} onClick={addGroup} type="dashed" style={{ fontSize: 11 }}>
                   添加组
@@ -1013,6 +1099,7 @@ export default function RewardAnnotate() {
                 totalFrames={totalFrames} currentFrame={currentFrame}
                 groups={groups} rewardSum={rewardSum} pxPerFrame={pxPerFrame}
                 selectedSegId={selected?.segId ?? null}
+                pendingInPoint={pendingInPoint}
                 onSeek={f => { setPlaying(false); setCurrentFrame(f) }}
                 onCreateSegment={createSegment}
                 onSelectSegment={(segId, groupId) => setSelected(segId && groupId ? { segId, groupId } : null)}
