@@ -8,7 +8,7 @@ import {
   PlusOutlined, SaveOutlined,
   StepBackwardOutlined, StepForwardOutlined,
 } from '@ant-design/icons'
-import FileBrowser from '../components/FileBrowser'
+import FileManager from '../components/FileManager'
 import VideoPlayer from '../components/VideoPlayer'
 import { usePlayback } from '../hooks/usePlayback'
 import {
@@ -167,13 +167,15 @@ export default function Annotate() {
         {/* Left: file browser */}
         <Col span={6}>
           {vizFormat === 'hdf5' ? (
-            <FileBrowser
+            <FileManager
+              mode="local"
               title="选择 HDF5 文件"
               filterExt={['.h5', '.hdf5']}
               onSelect={(_, items) => { if (items[0]) loadDataset(items[0]) }}
             />
           ) : (
-            <FileBrowser
+            <FileManager
+              mode="local"
               title="选择 LeRobot 目录"
               dirOnly
               onSelect={(_, items) => { if (items[0]) loadDataset(items[0]) }}

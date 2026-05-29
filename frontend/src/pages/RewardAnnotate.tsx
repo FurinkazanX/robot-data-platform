@@ -2,23 +2,23 @@ import {
   useCallback, useEffect, useMemo, useRef, useState, KeyboardEvent,
 } from 'react'
 import {
-  Button, Col, Divider, Form, Input, InputNumber, Popconfirm, Radio, Row,
+  Button, Col, Divider, Form, InputNumber, Popconfirm, Radio, Row,
   Slider, Space, Spin, Tag, Tooltip, Typography, message,
 } from 'antd'
 import {
-  ArrowLeftOutlined, CheckCircleFilled, DatabaseOutlined, DeleteOutlined,
-  EyeInvisibleOutlined, EyeOutlined, FileOutlined, FolderOutlined,
+  CheckCircleFilled, DatabaseOutlined, DeleteOutlined,
+  EyeInvisibleOutlined, EyeOutlined,
   MinusOutlined, PauseCircleOutlined, PlayCircleOutlined,
   PlusOutlined, SaveOutlined, StepBackwardOutlined, StepForwardOutlined,
   ZoomInOutlined, ZoomOutOutlined,
 } from '@ant-design/icons'
-import FileBrowser from '../components/FileBrowser'
+import FileManager from '../components/FileManager'
 import VideoPlayer from '../components/VideoPlayer'
 import { usePlayback } from '../hooks/usePlayback'
 import {
   getDatasetInfo, loadReward, saveReward,
   applyRewardToDataset, applyRewardRemote,
-  getRemoteDatasetInfo, listRemote, testConnection,
+  getRemoteDatasetInfo,
   getAnnotatedEpisodes,
   type DatasetInfo, type FileItem, type RewardGroup, type RewardSegment,
   type SSHCreds,
@@ -50,10 +50,6 @@ interface CameraItem { id: string; label: string }
 
 function nanoid() { return Math.random().toString(36).slice(2, 10) }
 function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)) }
-function parentPath(p: string) {
-  const idx = p.lastIndexOf('/')
-  return idx <= 0 ? '/' : p.slice(0, idx)
-}
 
 function computeRewardSum(groups: RewardGroup[], totalFrames: number): Float32Array {
   const arr = new Float32Array(totalFrames)
@@ -404,44 +400,6 @@ export default function RewardAnnotate() {
 
   // ── Remote SSH ──────────────────────────────────────────────────────────────
   const [rCreds, setRCreds] = useState<SSHCreds>({ host: '', port: 22, username: '', password: '' })
-  const [rConnected, setRConnected] = useState(false)
-  const [rConnecting, setRConnecting] = useState(false)
-  const [rPath, setRPath] = useState('/')
-  const [rItems, setRItems] = useState<FileItem[]>([])
-  const [rLoading, setRLoading] = useState(false)
-  const rCredsRef = useRef(rCreds)
-  useEffect(() => { rCredsRef.current = rCreds }, [rCreds])
-
-  const patchRCreds = (p: Partial<SSHCreds>) => setRCreds(prev => ({ ...prev, ...p }))
-
-  // ── Video URL loading ────────────────────────────────────────────────────────
-  // (handled by VideoPlayer component)
-
-  const handleConnect = async () => {
-    if (!rCreds.host || !rCreds.username) return message.warning('请填写主机和用户名')
-    setRConnecting(true)
-    try {
-      await testConnection(rCreds)
-      setRConnected(true)
-      await loadRemoteDir('/')
-      message.success('连接成功')
-    } catch (err: unknown) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      message.error('连接失败: ' + (detail ?? String(err)))
-    } finally {
-      setRConnecting(false)
-    }
-  }
-
-  const loadRemoteDir = async (path: string) => {
-    setRLoading(true)
-    try {
-      const { items } = await listRemote(rCreds, path)
-      setRPath(path)
-      setRItems(items.filter(i => i.is_dir))
-    } catch { message.error('浏览远程目录失败') }
-    finally { setRLoading(false) }
-  }
 
   // ── Load dataset ────────────────────────────────────────────────────────────
   const loadDataset = useCallback(async (item: FileItem, source: DataSource, targetEpisode = 0) => {
@@ -450,7 +408,7 @@ export default function RewardAnnotate() {
     setGroups([]); setSelected(null)
     try {
       const d = source === 'remote'
-        ? await getRemoteDatasetInfo(rCredsRef.current, item.path)
+        ? await getRemoteDatasetInfo(rCreds, item.path)
         : await getDatasetInfo(item.path)
       setInfo(d)
       const ep = Math.min(Math.max(targetEpisode, 0), Math.max(d.n_episodes - 1, 0))
@@ -648,9 +606,9 @@ export default function RewardAnnotate() {
     if (!selectedFile) return
     setApplying(true)
     try {
-      const rewards = Array.from(rewardSum)
+      const rewards = Array.from(rewardSum) as number[]
       if (dataSource === 'remote')
-        await applyRewardRemote(rCredsRef.current, selectedFile.path, episode, rewards)
+        await applyRewardRemote(rCreds, selectedFile.path, episode, rewards)
       else
         await applyRewardToDataset(selectedFile.path, episode, rewards)
       message.success('reward 字段已写入数据集 parquet')
@@ -699,7 +657,6 @@ export default function RewardAnnotate() {
             onChange={e => {
               setDataSource(e.target.value)
               setSelectedFile(null); setInfo(null); setGroups([])
-              setVideoUrls({}); setRConnected(false)
             }}>
             <Radio.Button value="local">本地</Radio.Button>
             <Radio.Button value="remote">远程服务器</Radio.Button>
@@ -711,83 +668,13 @@ export default function RewardAnnotate() {
         {/* Left: selector */}
         <Col span={6}>
           {dataSource === 'local' ? (
-            <FileBrowser title="选择 LeRobot 目录" dirOnly
+            <FileManager mode="local" title="选择 LeRobot 目录" dirOnly
               onSelect={(_, items) => { if (items[0]) loadDataset(items[0], 'local') }} />
           ) : (
-            <div>
-              <Form layout="vertical" size="small" style={{ marginBottom: 8 }}>
-                <Form.Item label="主机 IP">
-                  <Input value={rCreds.host} onChange={e => patchRCreds({ host: e.target.value })}
-                    placeholder="192.168.1.100" disabled={rConnected} />
-                </Form.Item>
-                <Form.Item label="端口">
-                  <InputNumber value={rCreds.port ?? 22}
-                    onChange={v => patchRCreds({ port: v ?? 22 })}
-                    style={{ width: '100%' }} disabled={rConnected} />
-                </Form.Item>
-                <Form.Item label="用户名">
-                  <Input value={rCreds.username} onChange={e => patchRCreds({ username: e.target.value })}
-                    disabled={rConnected} />
-                </Form.Item>
-                <Form.Item label="密码">
-                  <Input.Password value={rCreds.password ?? ''}
-                    onChange={e => patchRCreds({ password: e.target.value })}
-                    disabled={rConnected} />
-                </Form.Item>
-                <Form.Item>
-                  {rConnected ? (
-                    <Space>
-                      <Tag color="green">已连接</Tag>
-                      <Button size="small" onClick={() => {
-                        setRConnected(false); setRItems([])
-                        setSelectedFile(null); setInfo(null)
-                      }}>断开</Button>
-                    </Space>
-                  ) : (
-                    <Button type="primary" loading={rConnecting} onClick={handleConnect} block>连接</Button>
-                  )}
-                </Form.Item>
-              </Form>
-              {rConnected && (
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
-                    {rPath !== '/' && (
-                      <Button size="small" icon={<ArrowLeftOutlined />}
-                        onClick={() => loadRemoteDir(parentPath(rPath))} />
-                    )}
-                    <Text ellipsis style={{ flex: 1, fontSize: 11, color: '#888' }}>{rPath}</Text>
-                    <Tooltip title="选择当前目录作为 LeRobot 数据集">
-                      <Button size="small" type="primary" onClick={() =>
-                        loadDataset({ name: rPath.split('/').pop() || rPath, path: rPath, is_dir: true, size: null, mtime: 0, ext: null }, 'remote')
-                      }>选择</Button>
-                    </Tooltip>
-                  </div>
-                  {rLoading
-                    ? <div style={{ textAlign: 'center', padding: 12 }}><Spin size="small" /></div>
-                    : (
-                      <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid #d9d9d9', borderRadius: 6 }}>
-                        {rItems.length === 0
-                          ? <div style={{ padding: '8px 10px', color: '#999', fontSize: 12 }}>无目录</div>
-                          : rItems.map(item => (
-                            <div key={item.path}
-                              style={{
-                                padding: '6px 10px', cursor: 'pointer', fontSize: 13,
-                                display: 'flex', alignItems: 'center', gap: 6,
-                                background: selectedFile?.path === item.path ? '#e6f4ff' : 'transparent',
-                                whiteSpace: 'nowrap',
-                              }}
-                              onClick={() => loadRemoteDir(item.path)}>
-                              {item.is_dir
-                                ? <FolderOutlined style={{ color: '#faad14', flexShrink: 0 }} />
-                                : <FileOutlined style={{ flexShrink: 0 }} />}
-                              <span>{item.name}</span>
-                            </div>
-                          ))}
-                      </div>
-                    )}
-                </div>
-              )}
-            </div>
+            <FileManager mode="remote" title="选择远程 LeRobot 目录" dirOnly
+              fileOps={false} height={320}
+              onConnect={c => { setRCreds(c) }}
+              onSelect={(_, items) => { if (items[0]) loadDataset(items[0], 'remote') }} />
           )}
           {info && (
             <div style={{ marginTop: 8 }}>

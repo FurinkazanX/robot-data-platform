@@ -1,24 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Button, Col, Divider, Form, Input, InputNumber, Radio, Row, Select,
-  Slider, Space, Spin, Table, Tag, Tooltip, Typography, message,
+  Slider, Space, Table, Tag, Typography, message,
 } from 'antd'
 import {
   PlayCircleOutlined, PauseCircleOutlined,
   StepForwardOutlined, StepBackwardOutlined,
-  FileOutlined, FolderOutlined, ArrowLeftOutlined,
 } from '@ant-design/icons'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip,
   Legend, ResponsiveContainer,
 } from 'recharts'
-import FileBrowser from '../components/FileBrowser'
+import FileManager from '../components/FileManager'
 import VideoPlayer from '../components/VideoPlayer'
 import { usePlayback } from '../hooks/usePlayback'
 import {
   getDatasetInfo, getSeries, editValue,
   getRemoteDatasetInfo, getRemoteSeries,
-  listRemote, testConnection,
   type DatasetInfo, type FileItem, type SSHCreds,
 } from '../api/client'
 
@@ -29,11 +27,6 @@ const COLORS = ['#1677ff', '#52c41a', '#fa8c16', '#f5222d', '#722ed1', '#13c2c2'
 interface CameraEntry {
   id: string
   label: string
-}
-
-function parentPath(p: string): string {
-  const idx = p.lastIndexOf('/')
-  return idx <= 0 ? '/' : p.slice(0, idx)
 }
 
 export default function Visualize() {
@@ -52,18 +45,8 @@ export default function Visualize() {
   // Remote state
   const [rCreds, setRCreds] = useState<SSHCreds>({ host: '', port: 22, username: '', password: '' })
   const [rConnected, setRConnected] = useState(false)
-  const [rConnecting, setRConnecting] = useState(false)
-  const [rPath, setRPath] = useState('/')
-  const [rItems, setRItems] = useState<FileItem[]>([])
-  const [rLoading, setRLoading] = useState(false)
-  const rCredsRef = useRef(rCreds)
 
   const { currentFrame, setCurrentFrame, playing, setPlaying, fps, setFps } = usePlayback(totalFrames)
-
-  // Keep rCredsRef current without adding to effect deps
-  useEffect(() => { rCredsRef.current = rCreds }, [rCreds])
-
-  const patchRCreds = (p: Partial<SSHCreds>) => setRCreds(prev => ({ ...prev, ...p }))
 
   // Derive camera list
   const cameraList = useMemo((): CameraEntry[] => {
@@ -99,46 +82,13 @@ export default function Visualize() {
     }
   }, [])
 
-  // ── Remote connection + browse ────────────────────────────────────────────
-
-  const handleConnect = async () => {
-    if (!rCreds.host || !rCreds.username) return message.warning('请填写主机和用户名')
-    setRConnecting(true)
-    try {
-      await testConnection(rCreds)
-      setRConnected(true)
-      await loadRemote('/')
-      message.success('连接成功')
-    } catch (e: unknown) {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      message.error('连接失败: ' + (detail ?? String(e)))
-    } finally {
-      setRConnecting(false)
-    }
-  }
-
-  const loadRemote = async (path: string) => {
-    setRLoading(true)
-    try {
-      const { items } = await listRemote(rCreds, path)
-      setRPath(path)
-      setRItems(
-        vizFormat === 'hdf5'
-          ? items.filter(i => i.is_dir || i.ext === '.h5' || i.ext === '.hdf5')
-          : items.filter(i => i.is_dir),
-      )
-    } catch {
-      message.error('浏览远程目录失败')
-    } finally {
-      setRLoading(false)
-    }
-  }
+  // ── Remote file select ────────────────────────────────────────────────────
 
   const handleRemoteSelect = async (item: FileItem) => {
     setSelectedFile(item)
     setCurrentFrame(0); setEpisode(0)
     try {
-      const d = await getRemoteDatasetInfo(rCredsRef.current, item.path)
+      const d = await getRemoteDatasetInfo(rCreds, item.path)
       setInfo(d)
       setTotalFrames(d.episodes?.[0]?.length ?? d.n_frames)
       if (d.fps) setFps(Math.min(d.fps, 30))
@@ -161,7 +111,7 @@ export default function Visualize() {
   useEffect(() => {
     if (!selectedFile) return
     const load = dataSource === 'remote' && rConnected
-      ? getRemoteSeries(rCredsRef.current, selectedFile.path, episode)
+      ? getRemoteSeries(rCreds, selectedFile.path, episode)
       : getSeries(selectedFile.path, episode)
     load.then(({ fields }) => {
       setSeries(fields)
@@ -266,137 +216,43 @@ export default function Visualize() {
         {/* Left panel */}
         <Col span={6}>
           {dataSource === 'local' ? (
-            /* Local file browser */
             vizFormat === 'hdf5' ? (
-              <FileBrowser
+              <FileManager
+                mode="local"
                 title="选择 HDF5 文件"
-                onSelect={handleLocalSelect}
                 filterExt={['.h5', '.hdf5']}
+                onSelect={handleLocalSelect}
               />
             ) : (
-              <FileBrowser
+              <FileManager
+                mode="local"
                 title="选择 LeRobot 目录"
                 dirOnly
                 onSelect={handleLocalSelect}
               />
             )
           ) : (
-            /* Remote SSH form + browser */
-            <div>
-              <Form layout="vertical" size="small" style={{ marginBottom: 8 }}>
-                <Form.Item label="主机 IP">
-                  <Input
-                    value={rCreds.host}
-                    onChange={e => patchRCreds({ host: e.target.value })}
-                    placeholder="192.168.1.100"
-                    disabled={rConnected}
-                  />
-                </Form.Item>
-                <Form.Item label="端口">
-                  <InputNumber
-                    value={rCreds.port ?? 22}
-                    onChange={v => patchRCreds({ port: v ?? 22 })}
-                    style={{ width: '100%' }}
-                    disabled={rConnected}
-                  />
-                </Form.Item>
-                <Form.Item label="用户名">
-                  <Input
-                    value={rCreds.username}
-                    onChange={e => patchRCreds({ username: e.target.value })}
-                    disabled={rConnected}
-                  />
-                </Form.Item>
-                <Form.Item label="密码">
-                  <Input.Password
-                    value={rCreds.password ?? ''}
-                    onChange={e => patchRCreds({ password: e.target.value })}
-                    disabled={rConnected}
-                  />
-                </Form.Item>
-                <Form.Item>
-                  {rConnected ? (
-                    <Space>
-                      <Tag color="green">已连接</Tag>
-                      <Button
-                        size="small"
-                        onClick={() => { setRConnected(false); setRItems([]); setSelectedFile(null); setInfo(null) }}
-                      >
-                        断开
-                      </Button>
-                    </Space>
-                  ) : (
-                    <Button type="primary" loading={rConnecting} onClick={handleConnect} block>
-                      连接
-                    </Button>
-                  )}
-                </Form.Item>
-              </Form>
-
-              {rConnected && (
-                <div>
-                  {/* Path + back */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
-                    {rPath !== '/' && (
-                      <Button
-                        size="small"
-                        icon={<ArrowLeftOutlined />}
-                        onClick={() => loadRemote(parentPath(rPath))}
-                      />
-                    )}
-                    <Text ellipsis style={{ flex: 1, fontSize: 11, color: '#888' }}>{rPath}</Text>
-                    {vizFormat === 'lerobot' && (
-                      <Tooltip title="选择当前目录">
-                        <Button
-                          size="small"
-                          type="primary"
-                          onClick={() => handleRemoteSelect({
-                            name: rPath.split('/').pop() || rPath,
-                            path: rPath,
-                            is_dir: true,
-                            size: null,
-                            mtime: 0,
-                            ext: null,
-                          })}
-                        >
-                          选择
-                        </Button>
-                      </Tooltip>
-                    )}
-                  </div>
-
-                  {/* File list */}
-                  {rLoading ? (
-                    <div style={{ textAlign: 'center', padding: 12 }}><Spin size="small" /></div>
-                  ) : (
-                    <div style={{
-                      maxHeight: 320, overflowY: 'auto', overflowX: 'auto',
-                      border: '1px solid #d9d9d9', borderRadius: 6,
-                    }}>
-                      {rItems.length === 0 ? (
-                        <div style={{ padding: '8px 10px', color: '#999', fontSize: 12 }}>无文件</div>
-                      ) : rItems.map(item => (
-                        <div
-                          key={item.path}
-                          style={{
-                            padding: '6px 10px', cursor: 'pointer',
-                            display: 'flex', alignItems: 'center', gap: 6,
-                            background: selectedFile?.path === item.path ? '#e6f4ff' : 'transparent',
-                            fontSize: 13, whiteSpace: 'nowrap',
-                          }}
-                          onClick={() => item.is_dir ? loadRemote(item.path) : handleRemoteSelect(item)}
-                        >
-                          {item.is_dir
-                            ? <FolderOutlined style={{ color: '#faad14', flexShrink: 0 }} />
-                            : <FileOutlined style={{ flexShrink: 0 }} />}
-                          <span style={{ fontSize: 13 }}>{item.name}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+            vizFormat === 'hdf5' ? (
+              <FileManager
+                mode="remote"
+                title="选择远程 HDF5 文件"
+                filterExt={['.h5', '.hdf5']}
+                fileOps={false}
+                height={320}
+                onConnect={c => { setRCreds(c); setRConnected(true) }}
+                onSelect={(_, items) => { if (items[0]) handleRemoteSelect(items[0]) }}
+              />
+            ) : (
+              <FileManager
+                mode="remote"
+                title="选择远程 LeRobot 目录"
+                dirOnly
+                fileOps={false}
+                height={320}
+                onConnect={c => { setRCreds(c); setRConnected(true) }}
+                onSelect={(_, items) => { if (items[0]) handleRemoteSelect(items[0]) }}
+              />
+            )
           )}
 
           {info && (

@@ -6,7 +6,7 @@ import {
 import {
   DeleteOutlined, EyeOutlined, PlusOutlined, StopOutlined,
 } from '@ant-design/icons'
-import FileBrowser from '../components/FileBrowser'
+import FileManager from '../components/FileManager'
 import {
   cancelConversion, dismissJob, getConverters, listAllJobs,
   previewFile, startConversion,
@@ -125,7 +125,7 @@ function ConvertForm({ onStarted }: { onStarted: () => void }) {
 
       <Row gutter={16}>
         <Col span={12}>
-          <FileBrowser title="源文件（选择 HDF5）" checkable filterExt={['.h5', '.hdf5']}
+          <FileManager mode="local" title="源文件（选择 HDF5）" checkable filterExt={['.h5', '.hdf5']}
             onSelect={(_, items) => setSrcFiles(items)} />
           <Button icon={<EyeOutlined />} size="small" style={{ marginTop: 6 }} onClick={handlePreview}
             disabled={!srcFiles.length}>
@@ -133,7 +133,7 @@ function ConvertForm({ onStarted }: { onStarted: () => void }) {
           </Button>
         </Col>
         <Col span={12}>
-          <FileBrowser title="目标数据集目录" dirOnly fileOps
+          <FileManager mode="local" title="目标数据集目录" dirOnly
             onSelect={(_, items) => setDstDir(items[0] ?? null)} />
           {dstDir && (
             <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>
