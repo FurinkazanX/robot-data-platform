@@ -13,9 +13,11 @@ import {
   Legend, ResponsiveContainer,
 } from 'recharts'
 import FileBrowser from '../components/FileBrowser'
+import VideoPlayer from '../components/VideoPlayer'
+import { usePlayback } from '../hooks/usePlayback'
 import {
-  getDatasetInfo, getFrameUrl, getSeries, editValue,
-  getRemoteDatasetInfo, fetchRemoteFrame, getRemoteSeries,
+  getDatasetInfo, getSeries, editValue,
+  getRemoteDatasetInfo, getRemoteSeries,
   listRemote, testConnection,
   type DatasetInfo, type FileItem, type SSHCreds,
 } from '../api/client'
@@ -42,14 +44,10 @@ export default function Visualize() {
   const [selectedFile, setSelectedFile] = useState<FileItem | null>(null)
   const [info, setInfo] = useState<DatasetInfo | null>(null)
   const [episode, setEpisode] = useState(0)
-  const [frameIdx, setFrameIdx] = useState(0)
   const [totalFrames, setTotalFrames] = useState(0)
-  const [playing, setPlaying] = useState(false)
-  const [fps, setFps] = useState(10)
   const [series, setSeries] = useState<Record<string, number[]>>({})
   const [visibleFields, setVisibleFields] = useState<string[]>([])
   const [editingRow, setEditingRow] = useState<{ field: string; value: unknown } | null>(null)
-  const [imgErrors, setImgErrors] = useState<Record<string, boolean>>({})
 
   // Remote state
   const [rCreds, setRCreds] = useState<SSHCreds>({ host: '', port: 22, username: '', password: '' })
@@ -58,34 +56,12 @@ export default function Visualize() {
   const [rPath, setRPath] = useState('/')
   const [rItems, setRItems] = useState<FileItem[]>([])
   const [rLoading, setRLoading] = useState(false)
-  const [remoteFrameUrls, setRemoteFrameUrls] = useState<Record<string, string>>({})
-  const frameReqRef = useRef(0)
   const rCredsRef = useRef(rCreds)
 
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const { currentFrame, setCurrentFrame, playing, setPlaying, fps, setFps } = usePlayback(totalFrames)
 
   // Keep rCredsRef current without adding to effect deps
   useEffect(() => { rCredsRef.current = rCreds }, [rCreds])
-
-  // Revoke blob URLs on cleanup
-  useEffect(() => {
-    return () => {
-      setRemoteFrameUrls(prev => {
-        Object.values(prev).forEach(u => u && URL.revokeObjectURL(u))
-        return {}
-      })
-    }
-  }, [])
-
-  // Revoke URLs when switching away from remote
-  useEffect(() => {
-    if (dataSource !== 'remote') {
-      setRemoteFrameUrls(prev => {
-        Object.values(prev).forEach(u => u && URL.revokeObjectURL(u))
-        return {}
-      })
-    }
-  }, [dataSource])
 
   const patchRCreds = (p: Partial<SSHCreds>) => setRCreds(prev => ({ ...prev, ...p }))
 
@@ -112,7 +88,7 @@ export default function Visualize() {
     const item = items[0]
     if (!item) return
     setSelectedFile(item)
-    setFrameIdx(0); setEpisode(0); setImgErrors({})
+    setCurrentFrame(0); setEpisode(0)
     try {
       const d = await getDatasetInfo(item.path)
       setInfo(d)
@@ -160,7 +136,7 @@ export default function Visualize() {
 
   const handleRemoteSelect = async (item: FileItem) => {
     setSelectedFile(item)
-    setFrameIdx(0); setEpisode(0); setImgErrors({})
+    setCurrentFrame(0); setEpisode(0)
     try {
       const d = await getRemoteDatasetInfo(rCredsRef.current, item.path)
       setInfo(d)
@@ -175,12 +151,7 @@ export default function Visualize() {
 
   const handleEpisodeChange = (ep: number) => {
     setEpisode(ep)
-    setFrameIdx(0)
-    setImgErrors({})
-    setRemoteFrameUrls(prev => {
-      Object.values(prev).forEach(u => u && URL.revokeObjectURL(u))
-      return {}
-    })
+    setCurrentFrame(0)
     const epLen = info?.episodes?.find(e => e.episode_index === ep)?.length ?? info?.n_frames ?? 0
     setTotalFrames(epLen)
   }
@@ -198,46 +169,6 @@ export default function Visualize() {
     }).catch(() => {})
   }, [selectedFile, episode, dataSource, rConnected])
 
-  // ── Playback ──────────────────────────────────────────────────────────────
-
-  useEffect(() => {
-    if (intervalRef.current) clearInterval(intervalRef.current)
-    if (!playing) return
-    intervalRef.current = setInterval(() => {
-      setFrameIdx(prev => {
-        if (prev >= totalFrames - 1) { setPlaying(false); return prev }
-        return prev + 1
-      })
-    }, 1000 / fps)
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
-  }, [playing, fps, totalFrames])
-
-  // ── Remote frame fetching ─────────────────────────────────────────────────
-
-  useEffect(() => {
-    if (dataSource !== 'remote' || !selectedFile || !rConnected || cameraList.length === 0) return
-
-    const reqId = ++frameReqRef.current
-
-    Promise.all(
-      cameraList.map(cam =>
-        fetchRemoteFrame(rCredsRef.current, selectedFile.path, episode, frameIdx, cam.id)
-          .then(url => [cam.id, url] as const)
-          .catch(() => [cam.id, ''] as const),
-      ),
-    ).then(entries => {
-      if (frameReqRef.current !== reqId) {
-        entries.forEach(([, u]) => u && URL.revokeObjectURL(u))
-        return
-      }
-      setRemoteFrameUrls(prev => {
-        Object.values(prev).forEach(u => u && URL.revokeObjectURL(u))
-        return Object.fromEntries(entries.filter(([, u]) => u))
-      })
-    })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataSource, frameIdx, episode, selectedFile?.path, rConnected, cameraList])
-
   // ── Chart + table ─────────────────────────────────────────────────────────
 
   const chartData = Object.keys(series).length
@@ -251,13 +182,13 @@ export default function Visualize() {
   const tableRows = Object.entries(series).map(([field, values]) => ({
     key: field,
     field,
-    value: values[frameIdx] ?? '—',
+    value: values[currentFrame] ?? '—',
   }))
 
   const tableCols = [
     { title: '字段', dataIndex: 'field', width: 240 },
     {
-      title: `值（帧 ${frameIdx}）`,
+      title: `值（帧 ${currentFrame}）`,
       dataIndex: 'value',
       render: (v: unknown, row: { field: string; value: unknown }) => {
         if (dataSource === 'remote') {
@@ -273,10 +204,10 @@ export default function Visualize() {
               />
               <Button size="small" type="primary" onClick={async () => {
                 if (!selectedFile || !editingRow) return
-                await editValue({ path: selectedFile.path, episode, frame_idx: frameIdx, field: editingRow.field, value: editingRow.value })
+                await editValue({ path: selectedFile.path, episode, frame_idx: currentFrame, field: editingRow.field, value: editingRow.value })
                 setSeries(prev => {
                   const updated = [...(prev[editingRow.field] ?? [])]
-                  updated[frameIdx] = editingRow.value as number
+                  updated[currentFrame] = editingRow.value as number
                   return { ...prev, [editingRow.field]: updated }
                 })
                 setEditingRow(null)
@@ -296,15 +227,7 @@ export default function Visualize() {
     },
   ]
 
-  const camCols = cameraList.length <= 1 ? 1 : cameraList.length <= 4 ? 2 : 3
-
-  // ── Helpers ───────────────────────────────────────────────────────────────
-
-  const camUrl = (cam: CameraEntry): string => {
-    if (dataSource === 'remote') return remoteFrameUrls[cam.id] ?? ''
-    if (!selectedFile) return ''
-    return getFrameUrl(selectedFile.path, episode, frameIdx, cam.id)
-  }
+  const imgHeight = cameraList.length <= 1 ? 360 : 220
 
   return (
     <div>
@@ -541,125 +464,87 @@ export default function Visualize() {
 
               {/* Main visualization content */}
               <div style={{ flex: 1, minWidth: 0 }}>
-              {/* Camera images */}
-              {cameraList.length > 0 ? (
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: `repeat(${camCols}, 1fr)`,
-                  gap: 12,
-                  marginBottom: 16,
-                }}>
-                  {cameraList.map(cam => {
-                    const url = camUrl(cam)
-                    const hasError = imgErrors[cam.id]
-                    const isLoading = dataSource === 'remote' && !url && !hasError
-                    return (
-                      <div key={cam.id} style={{ textAlign: 'center' }}>
-                        {isLoading ? (
-                          <div style={{
-                            height: camCols === 1 ? 360 : 220,
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            border: '1px solid #d9d9d9', borderRadius: 6,
-                          }}>
-                            <Spin size="small" />
-                          </div>
-                        ) : !hasError && url ? (
-                          <img
-                            src={url}
-                            alt={cam.label}
-                            style={{
-                              width: '100%',
-                              maxHeight: camCols === 1 ? 360 : 220,
-                              objectFit: 'contain',
-                              border: '1px solid #d9d9d9',
-                              borderRadius: 6,
-                              background: '#000',
-                            }}
-                            onError={() => setImgErrors(prev => ({ ...prev, [cam.id]: true }))}
-                          />
-                        ) : (
-                          <div style={{
-                            height: camCols === 1 ? 360 : 220,
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            border: '1px solid #d9d9d9', borderRadius: 6, color: '#999',
-                          }}>
-                            无图像数据
-                          </div>
-                        )}
-                        <div style={{ marginTop: 4, fontSize: 12, color: '#555', wordBreak: 'break-all' }}>
-                          {cam.label}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              ) : (
-                <div style={{
-                  height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  border: '1px dashed #d9d9d9', borderRadius: 6, color: '#999', marginBottom: 16,
-                }}>
-                  无摄像头图像数据
-                </div>
-              )}
+                {/* Camera images */}
+                {cameraList.length > 0 ? (
+                  <VideoPlayer
+                    path={selectedFile.path}
+                    episode={episode}
+                    cameras={cameraList.map(c => c.id)}
+                    format={vizFormat}
+                    currentFrame={currentFrame}
+                    datasetFps={info?.fps ?? 30}
+                    dataSource={dataSource}
+                    creds={dataSource === 'remote' ? rCreds : undefined}
+                    imgHeight={imgHeight}
+                    style={{ marginBottom: 16 }}
+                  />
+                ) : (
+                  <div style={{
+                    height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    border: '1px dashed #d9d9d9', borderRadius: 6, color: '#999', marginBottom: 16,
+                  }}>
+                    无摄像头图像数据
+                  </div>
+                )}
 
-              {/* Playback controls */}
-              <Space style={{ width: '100%', justifyContent: 'center', marginBottom: 8 }}>
-                <Button icon={<StepBackwardOutlined />} onClick={() => setFrameIdx(p => Math.max(0, p - 1))} />
-                <Button
-                  icon={playing ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
-                  type="primary"
-                  onClick={() => setPlaying(p => !p)}
+                {/* Playback controls */}
+                <Space style={{ width: '100%', justifyContent: 'center', marginBottom: 8 }}>
+                  <Button icon={<StepBackwardOutlined />} onClick={() => setCurrentFrame(p => Math.max(0, p - 1))} />
+                  <Button
+                    icon={playing ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                    type="primary"
+                    onClick={() => setPlaying(p => !p)}
+                  />
+                  <Button icon={<StepForwardOutlined />} onClick={() => setCurrentFrame(p => Math.min(totalFrames - 1, p + 1))} />
+                  <span>FPS:</span>
+                  <InputNumber min={1} max={60} value={fps} onChange={v => setFps(v ?? 10)} size="small" style={{ width: 60 }} />
+                  <Text type="secondary">帧 {currentFrame} / {totalFrames - 1}</Text>
+                </Space>
+
+                <Slider
+                  min={0}
+                  max={Math.max(0, totalFrames - 1)}
+                  value={currentFrame}
+                  onChange={v => { setPlaying(false); setCurrentFrame(v) }}
+                  tooltip={{ formatter: v => `帧 ${v}` }}
                 />
-                <Button icon={<StepForwardOutlined />} onClick={() => setFrameIdx(p => Math.min(totalFrames - 1, p + 1))} />
-                <span>FPS:</span>
-                <InputNumber min={1} max={60} value={fps} onChange={v => setFps(v ?? 10)} size="small" style={{ width: 60 }} />
-                <Text type="secondary">帧 {frameIdx} / {totalFrames - 1}</Text>
-              </Space>
 
-              <Slider
-                min={0}
-                max={Math.max(0, totalFrames - 1)}
-                value={frameIdx}
-                onChange={v => { setPlaying(false); setFrameIdx(v) }}
-                tooltip={{ formatter: v => `帧 ${v}` }}
-              />
+                <Divider>传感器数据</Divider>
 
-              <Divider>传感器数据</Divider>
+                <Form.Item label="显示字段">
+                  <Select
+                    mode="multiple"
+                    value={visibleFields}
+                    onChange={setVisibleFields}
+                    options={Object.keys(series).map(k => ({ label: k, value: k }))}
+                    style={{ width: '100%' }}
+                    maxTagCount={6}
+                  />
+                </Form.Item>
 
-              <Form.Item label="显示字段">
-                <Select
-                  mode="multiple"
-                  value={visibleFields}
-                  onChange={setVisibleFields}
-                  options={Object.keys(series).map(k => ({ label: k, value: k }))}
-                  style={{ width: '100%' }}
-                  maxTagCount={6}
+                {visibleFields.length > 0 && chartData.length > 0 && (
+                  <ResponsiveContainer width="100%" height={220}>
+                    <LineChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="frame" />
+                      <YAxis />
+                      <ChartTooltip />
+                      <Legend />
+                      {visibleFields.map((f, i) => (
+                        <Line key={f} type="monotone" dataKey={f} stroke={COLORS[i % COLORS.length]} dot={false} strokeWidth={1.5} />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+
+                <Divider>当前帧数据{dataSource === 'local' ? '（可编辑）' : ''}</Divider>
+                <Table
+                  dataSource={tableRows}
+                  columns={tableCols}
+                  size="small"
+                  pagination={{ pageSize: 10 }}
+                  rowKey="field"
                 />
-              </Form.Item>
-
-              {visibleFields.length > 0 && chartData.length > 0 && (
-                <ResponsiveContainer width="100%" height={220}>
-                  <LineChart data={chartData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="frame" />
-                    <YAxis />
-                    <ChartTooltip />
-                    <Legend />
-                    {visibleFields.map((f, i) => (
-                      <Line key={f} type="monotone" dataKey={f} stroke={COLORS[i % COLORS.length]} dot={false} strokeWidth={1.5} />
-                    ))}
-                  </LineChart>
-                </ResponsiveContainer>
-              )}
-
-              <Divider>当前帧数据{dataSource === 'local' ? '（可编辑）' : ''}</Divider>
-              <Table
-                dataSource={tableRows}
-                columns={tableCols}
-                size="small"
-                pagination={{ pageSize: 10 }}
-                rowKey="field"
-              />
               </div>
             </div>
           )}

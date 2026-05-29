@@ -13,11 +13,13 @@ import {
   ZoomInOutlined, ZoomOutOutlined,
 } from '@ant-design/icons'
 import FileBrowser from '../components/FileBrowser'
+import VideoPlayer from '../components/VideoPlayer'
+import { usePlayback } from '../hooks/usePlayback'
 import {
-  getDatasetInfo, getFrameUrl, loadReward, saveReward,
+  getDatasetInfo, loadReward, saveReward,
   applyRewardToDataset, applyRewardRemote,
   getRemoteDatasetInfo, listRemote, testConnection,
-  getVideoUrl, cacheRemoteVideo, getCachedVideoUrl, getAnnotatedEpisodes,
+  getAnnotatedEpisodes,
   type DatasetInfo, type FileItem, type RewardGroup, type RewardSegment,
   type SSHCreds,
 } from '../api/client'
@@ -383,15 +385,7 @@ export default function RewardAnnotate() {
   const [totalFrames, setTotalFrames] = useState(0)
 
   // Playback
-  const [currentFrame, setCurrentFrame] = useState(0)
-  const [playing, setPlaying] = useState(false)
-  const [fps, setFps] = useState(10)
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  // Video
-  const [videoUrls, setVideoUrls] = useState<Record<string, string>>({})
-  const [cachingCams, setCachingCams] = useState<Set<string>>(new Set())
-  const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map())
+  const { currentFrame, setCurrentFrame, playing, setPlaying, fps, setFps } = usePlayback(totalFrames)
 
   // Reward groups
   const [groups, setGroups] = useState<RewardGroup[]>([])
@@ -421,39 +415,7 @@ export default function RewardAnnotate() {
   const patchRCreds = (p: Partial<SSHCreds>) => setRCreds(prev => ({ ...prev, ...p }))
 
   // ── Video URL loading ────────────────────────────────────────────────────────
-  const loadVideos = useCallback(async (
-    path: string, ep: number, cams: CameraItem[], source: DataSource, creds: SSHCreds,
-  ) => {
-    setVideoUrls({})
-    setCachingCams(new Set())
-    if (cams.length === 0) return
-
-    if (source === 'local') {
-      const urls: Record<string, string> = {}
-      cams.forEach(cam => { urls[cam.id] = getVideoUrl(path, ep, cam.id) })
-      setVideoUrls(urls)
-    } else {
-      for (const cam of cams) {
-        setCachingCams(prev => new Set([...prev, cam.id]))
-        cacheRemoteVideo(creds, path, ep, cam.id)
-          .then(({ token }) => setVideoUrls(prev => ({ ...prev, [cam.id]: getCachedVideoUrl(token) })))
-          .catch(() => message.error(`缓存视频失败: ${cam.label}`))
-          .finally(() => setCachingCams(prev => { const s = new Set(prev); s.delete(cam.id); return s }))
-      }
-    }
-  }, [])
-
-  // Sync all video currentTime when frame changes
-  useEffect(() => {
-    const videoFps = info?.fps ?? 30
-    videoRefs.current.forEach(vid => {
-      if (vid && vid.readyState >= 1) {
-        const target = currentFrame / videoFps
-        if (Math.abs(vid.currentTime - target) > 0.5 / videoFps)
-          vid.currentTime = target
-      }
-    })
-  }, [currentFrame, info?.fps])
+  // (handled by VideoPlayer component)
 
   const handleConnect = async () => {
     if (!rCreds.host || !rCreds.username) return message.warning('请填写主机和用户名')
@@ -485,8 +447,7 @@ export default function RewardAnnotate() {
   const loadDataset = useCallback(async (item: FileItem, source: DataSource, targetEpisode = 0) => {
     setSelectedFile(item)
     setInfo(null); setEpisode(0); setCurrentFrame(0)
-    setGroups([]); setSelected(null); setVideoUrls({})
-    videoRefs.current.clear()
+    setGroups([]); setSelected(null)
     try {
       const d = source === 'remote'
         ? await getRemoteDatasetInfo(rCredsRef.current, item.path)
@@ -507,12 +468,8 @@ export default function RewardAnnotate() {
       localStorage.setItem('reward_annotate_v1', JSON.stringify({
         dataSource: source, filePath: item.path, fileName: item.name, episode: ep,
       }))
-      if (d.format === 'lerobot') {
-        const cams = (d.cameras ?? []).map(c => ({ id: c, label: c }))
-        await loadVideos(item.path, ep, cams, source, rCredsRef.current)
-      }
     } catch { message.error('加载数据集失败') }
-  }, [loadVideos])
+  }, [])
 
   // ── Persist UI state to localStorage ────────────────────────────────────────
   // loadDatasetRef allows the mount-only effect below to call the stable callback
@@ -553,8 +510,7 @@ export default function RewardAnnotate() {
   const handleEpisodeChange = async (ep: number) => {
     if (!selectedFile || !info) return
     setEpisode(ep); setCurrentFrame(0); setPendingInPoint(null)
-    setGroups([]); setSelected(null); setVideoUrls({})
-    videoRefs.current.clear()
+    setGroups([]); setSelected(null)
     const frames = info.episodes?.find(e => e.episode_index === ep)?.length ?? info.n_frames ?? 0
     setTotalFrames(frames)
     setPxPerFrame(clamp(800 / Math.max(frames, 1), MIN_PX_PER_FRAME, MAX_PX_PER_FRAME))
@@ -566,11 +522,6 @@ export default function RewardAnnotate() {
     localStorage.setItem('reward_annotate_v1', JSON.stringify({
       dataSource, filePath: selectedFile.path, fileName: selectedFile.name, episode: ep,
     }))
-
-    if (info.format === 'lerobot') {
-      const cams = (info.cameras ?? []).map(c => ({ id: c, label: c }))
-      loadVideos(selectedFile.path, ep, cams, dataSource, rCredsRef.current)
-    }
   }
 
   // ── Cameras ─────────────────────────────────────────────────────────────────
@@ -582,18 +533,7 @@ export default function RewardAnnotate() {
     return (info.cameras ?? []).map(c => ({ id: c, label: c }))
   }, [info])
 
-  // ── Playback ─────────────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (intervalRef.current) clearInterval(intervalRef.current)
-    if (!playing) return
-    intervalRef.current = setInterval(() => {
-      setCurrentFrame(prev => {
-        if (prev >= totalFrames - 1) { setPlaying(false); return prev }
-        return prev + 1
-      })
-    }, 1000 / fps)
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
-  }, [playing, fps, totalFrames])
+  // ── Playback managed by usePlayback hook ─────────────────────────────────────
 
   // ── Reward sum ───────────────────────────────────────────────────────────────
   const rewardSum = useMemo(() => computeRewardSum(groups, totalFrames), [groups, totalFrames])
@@ -747,9 +687,6 @@ export default function RewardAnnotate() {
     return Array.from({ length: info.n_episodes }, (_, i) => ({ episode_index: i, length: 0 }))
   }, [info])
 
-  const camCols = cameras.length <= 1 ? 1 : cameras.length <= 4 ? 2 : 3
-  const camH = camCols === 1 ? 240 : 160
-
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div tabIndex={0} onKeyDown={handleKeyDown} style={{ outline: 'none' }}>
@@ -900,55 +837,18 @@ export default function RewardAnnotate() {
               <div style={{ flex: 1, minWidth: 0 }}>
                 {/* Camera grid */}
                 {cameras.length > 0 ? (
-                  <div style={{
-                    display: 'grid',
-                    gridTemplateColumns: `repeat(${camCols}, 1fr)`,
-                    gap: 8, marginBottom: 8,
-                  }}>
-                    {cameras.map(cam => {
-                      if (info.format === 'lerobot') {
-                        const url = videoUrls[cam.id]
-                        const caching = cachingCams.has(cam.id)
-                        return (
-                          <div key={cam.id} style={{ textAlign: 'center' }}>
-                            {caching ? (
-                              <div style={{ height: camH, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', border: '1px solid #d9d9d9', borderRadius: 4, background: '#111' }}>
-                                <Spin size="small" />
-                                <div style={{ color: '#aaa', fontSize: 11, marginTop: 6 }}>缓存视频中...</div>
-                              </div>
-                            ) : url ? (
-                              <video
-                                key={url}
-                                ref={el => { if (el) videoRefs.current.set(cam.id, el); else videoRefs.current.delete(cam.id) }}
-                                src={url}
-                                style={{ width: '100%', maxHeight: camH, objectFit: 'contain', background: '#000', borderRadius: 4, display: 'block' }}
-                                muted
-                                preload="auto"
-                                onLoadedMetadata={e => {
-                                  const v = e.currentTarget
-                                  v.currentTime = currentFrame / (info.fps ?? 30)
-                                }}
-                              />
-                            ) : (
-                              <div style={{ height: camH, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px dashed #d9d9d9', borderRadius: 4, color: '#999' }}>
-                                无视频
-                              </div>
-                            )}
-                            <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>{cam.label}</div>
-                          </div>
-                        )
-                      }
-                      // HDF5: use frame images
-                      return (
-                        <div key={cam.id} style={{ textAlign: 'center' }}>
-                          <img src={getFrameUrl(selectedFile.path, episode, currentFrame, cam.id)}
-                            alt={cam.label}
-                            style={{ width: '100%', maxHeight: camH, objectFit: 'contain', border: '1px solid #d9d9d9', borderRadius: 4, background: '#000' }} />
-                          <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>{cam.label}</div>
-                        </div>
-                      )
-                    })}
-                  </div>
+                  <VideoPlayer
+                    path={selectedFile.path}
+                    episode={episode}
+                    cameras={cameras.map((c: CameraItem) => c.id)}
+                    format={info.format as 'lerobot' | 'hdf5'}
+                    currentFrame={currentFrame}
+                    datasetFps={info.fps ?? 30}
+                    dataSource={dataSource}
+                    creds={dataSource === 'remote' ? rCreds : undefined}
+                    imgHeight={cameras.length <= 1 ? 240 : 160}
+                    style={{ marginBottom: 8 }}
+                  />
                 ) : (
                   <div style={{ height: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px dashed #d9d9d9', borderRadius: 4, color: '#999', marginBottom: 8 }}>
                     无摄像头图像

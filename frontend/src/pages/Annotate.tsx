@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Alert, Badge, Button, Col, Divider, Form, Input, InputNumber, Radio,
   Row, Select, Slider, Space, Spin, Tag, Typography, message,
@@ -9,8 +9,10 @@ import {
   StepBackwardOutlined, StepForwardOutlined,
 } from '@ant-design/icons'
 import FileBrowser from '../components/FileBrowser'
+import VideoPlayer from '../components/VideoPlayer'
+import { usePlayback } from '../hooks/usePlayback'
 import {
-  getDatasetInfo, getFrameUrl, loadAnnotations, saveAnnotations,
+  getDatasetInfo, loadAnnotations, saveAnnotations,
   getAnnotationLabels,
   type AnnotationData, type DatasetInfo, type FileItem,
 } from '../api/client'
@@ -38,17 +40,14 @@ export default function Annotate() {
   const [selectedFile, setSelectedFile] = useState<FileItem | null>(null)
   const [info, setInfo] = useState<DatasetInfo | null>(null)
   const [episode, setEpisode] = useState(0)
-  const [frameIdx, setFrameIdx] = useState(0)
   const [totalFrames, setTotalFrames] = useState(0)
-  const [playing, setPlaying] = useState(false)
-  const [fps, setFps] = useState(10)
   const [annotation, setAnnotation] = useState<EpisodeAnnotation>({ labels: [], frame_rewards: {} })
   const [allAnnotations, setAllAnnotations] = useState<RawEpisodes>({})
   const [presetLabels, setPresetLabels] = useState<string[]>([])
   const [newLabel, setNewLabel] = useState('')
   const [saving, setSaving] = useState(false)
-  const [imgErrors, setImgErrors] = useState<Record<string, boolean>>({})
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const { currentFrame, setCurrentFrame, playing, setPlaying, fps, setFps } = usePlayback(totalFrames)
 
   useEffect(() => {
     getAnnotationLabels().then(r => setPresetLabels(r.suggestions)).catch(() => {})
@@ -66,9 +65,8 @@ export default function Annotate() {
 
   const loadDataset = useCallback(async (item: FileItem) => {
     setSelectedFile(item)
-    setFrameIdx(0)
+    setCurrentFrame(0)
     setEpisode(0)
-    setImgErrors({})
     setAnnotation({ labels: [], frame_rewards: {} })
     setAllAnnotations({})
     try {
@@ -87,35 +85,21 @@ export default function Annotate() {
 
   const handleEpisodeChange = (ep: number) => {
     setEpisode(ep)
-    setFrameIdx(0)
-    setImgErrors({})
+    setCurrentFrame(0)
     const epLen = info?.episodes?.find(e => e.episode_index === ep)?.length ?? info?.n_frames ?? 0
     setTotalFrames(epLen)
     setAnnotation(toAnnotation(allAnnotations[String(ep)]))
   }
 
-  // Playback
-  useEffect(() => {
-    if (intervalRef.current) clearInterval(intervalRef.current)
-    if (!playing) return
-    intervalRef.current = setInterval(() => {
-      setFrameIdx(prev => {
-        if (prev >= totalFrames - 1) { setPlaying(false); return prev }
-        return prev + 1
-      })
-    }, 1000 / fps)
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
-  }, [playing, fps, totalFrames])
-
-  const currentReward = (annotation.frame_rewards[String(frameIdx)] as number | undefined) ?? null
+  const currentReward = (annotation.frame_rewards[String(currentFrame)] as number | undefined) ?? null
 
   const setFrameReward = (val: number | null) => {
     setAnnotation(prev => {
       const fr = { ...prev.frame_rewards }
       if (val === null) {
-        delete fr[String(frameIdx)]
+        delete fr[String(currentFrame)]
       } else {
-        fr[String(frameIdx)] = val
+        fr[String(currentFrame)] = val
       }
       return { ...prev, frame_rewards: fr }
     })
@@ -156,7 +140,7 @@ export default function Annotate() {
       || Object.keys(allAnnotations[k]?.frame_rewards ?? {}).length > 0
   )
 
-  const camCols = cameraList.length <= 1 ? 1 : cameraList.length <= 4 ? 2 : 3
+  const imgHeight = cameraList.length <= 1 ? 320 : 200
 
   return (
     <div>
@@ -249,44 +233,16 @@ export default function Annotate() {
             <>
               {/* Camera grid */}
               {cameraList.length > 0 ? (
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: `repeat(${camCols}, 1fr)`,
-                  gap: 12,
-                  marginBottom: 12,
-                }}>
-                  {cameraList.map(cam => {
-                    const url = getFrameUrl(selectedFile.path, episode, frameIdx, cam.id)
-                    return (
-                      <div key={cam.id} style={{ textAlign: 'center' }}>
-                        {!imgErrors[cam.id] ? (
-                          <img
-                            src={url}
-                            alt={cam.label}
-                            style={{
-                              width: '100%',
-                              maxHeight: camCols === 1 ? 320 : 200,
-                              objectFit: 'contain',
-                              border: '1px solid #d9d9d9',
-                              borderRadius: 6,
-                              background: '#000',
-                            }}
-                            onError={() => setImgErrors(prev => ({ ...prev, [cam.id]: true }))}
-                          />
-                        ) : (
-                          <div style={{
-                            height: camCols === 1 ? 320 : 200,
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            border: '1px solid #d9d9d9', borderRadius: 6, color: '#999',
-                          }}>
-                            无图像数据
-                          </div>
-                        )}
-                        <div style={{ marginTop: 4, fontSize: 12, color: '#555' }}>{cam.label}</div>
-                      </div>
-                    )
-                  })}
-                </div>
+                <VideoPlayer
+                  path={selectedFile.path}
+                  episode={episode}
+                  cameras={cameraList.map(c => c.id)}
+                  format={vizFormat}
+                  currentFrame={currentFrame}
+                  datasetFps={info.fps ?? 30}
+                  imgHeight={imgHeight}
+                  style={{ marginBottom: 12 }}
+                />
               ) : (
                 <div style={{
                   height: 160, display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -298,23 +254,23 @@ export default function Annotate() {
 
               {/* Playback controls */}
               <Space style={{ width: '100%', justifyContent: 'center', marginBottom: 8 }}>
-                <Button icon={<StepBackwardOutlined />} onClick={() => setFrameIdx(p => Math.max(0, p - 1))} />
+                <Button icon={<StepBackwardOutlined />} onClick={() => setCurrentFrame(p => Math.max(0, p - 1))} />
                 <Button
                   icon={playing ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
                   type="primary"
                   onClick={() => setPlaying(p => !p)}
                 />
-                <Button icon={<StepForwardOutlined />} onClick={() => setFrameIdx(p => Math.min(totalFrames - 1, p + 1))} />
+                <Button icon={<StepForwardOutlined />} onClick={() => setCurrentFrame(p => Math.min(totalFrames - 1, p + 1))} />
                 <span>FPS:</span>
                 <InputNumber min={1} max={60} value={fps} onChange={v => setFps(v ?? 10)} size="small" style={{ width: 60 }} />
-                <Text type="secondary">帧 {frameIdx} / {totalFrames - 1}</Text>
+                <Text type="secondary">帧 {currentFrame} / {totalFrames - 1}</Text>
               </Space>
 
               <Slider
                 min={0}
                 max={Math.max(0, totalFrames - 1)}
-                value={frameIdx}
-                onChange={v => { setPlaying(false); setFrameIdx(v) }}
+                value={currentFrame}
+                onChange={v => { setPlaying(false); setCurrentFrame(v) }}
                 tooltip={{ formatter: v => `帧 ${v}` }}
                 style={{ marginBottom: 16 }}
               />
@@ -370,7 +326,7 @@ export default function Annotate() {
                 />
               </Space>
 
-              <Divider>帧 Reward 标注（帧 {frameIdx}）</Divider>
+              <Divider>帧 Reward 标注（帧 {currentFrame}）</Divider>
 
               <Row gutter={16} align="middle" style={{ marginBottom: 16 }}>
                 <Col flex="auto">
